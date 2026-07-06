@@ -96,6 +96,19 @@ class Game {
       this.sellSelectedTower();
     };
 
+    this.uiManager.onGetTowerInfo = () => {
+      const towerId = this.uiManager.getSelectedTowerId();
+      if (!towerId) return null;
+      const tower = this.towers.find(t => t.id === towerId);
+      if (!tower) return null;
+
+      const options = this.upgradeSystem.getUpgradeOptions(tower);
+      const canUpgrade = tower.data.level < 5 && options.length > 0;
+      const upgradeCost = canUpgrade ? options[0].cost : 0;
+      const sellValue = this.upgradeSystem.sellTower(tower);
+      return { level: tower.data.level, upgradeCost, sellValue, canUpgrade };
+    };
+
     this.uiManager.onStartGame = () => {
       this.startNewGame();
     };
@@ -189,9 +202,9 @@ class Game {
     // Check if tile is buildable
     if (!this.tileMap.isBuildable(col, row)) return false;
 
-    // Check if tower already exists here
-    const existingTower = this.towers.find(t => 
-      Math.abs(t.position.x - x) < 32 && Math.abs(t.position.y - y) < 32
+    // Check if a tower already occupies this exact tile
+    const existingTower = this.towers.find(t =>
+      Math.floor(t.centerX / 32) === col && Math.floor(t.centerY / 32) === row
     );
     if (existingTower) return false;
 
@@ -225,12 +238,9 @@ class Game {
   }
 
   private selectTower(col: number, row: number): void {
-    const x = col * 32 + 16;
-    const y = row * 32 + 16;
-
-    // Find tower near clicked position
-    const selectedTower = this.towers.find(t => 
-      Math.abs(t.position.x - x) < 20 && Math.abs(t.position.y - y) < 20
+    // Find the tower occupying the clicked tile
+    const selectedTower = this.towers.find(t =>
+      Math.floor(t.centerX / 32) === col && Math.floor(t.centerY / 32) === row
     );
 
     if (selectedTower) {
@@ -247,15 +257,18 @@ class Game {
     const tower = this.towers.find(t => t.id === towerId);
     if (!tower) return;
 
+    if (tower.data.level >= 5) return;
+
     const options = this.upgradeSystem.getUpgradeOptions(tower);
     if (options.length === 0) return;
 
     // Use first available option for simplicity
     const option = options[0];
-    
+
     if (this.gameData.gold >= option.cost) {
       this.gameData.gold -= option.cost;
       option.apply(tower);
+      tower.data.level++;
       this.audioManager.playSFX('click');
     }
   }
@@ -506,15 +519,20 @@ class Game {
       this.ctx.textAlign = 'left';
     }
 
-    // Draw pause overlay
+    // Draw pause overlay (only over the gameplay area, not the HUD bars)
     if (this.gameState === 'paused') {
+      const topBar = 50;
+      const bottomBar = 80;
+      const areaY = topBar;
+      const areaHeight = this.canvas.height - topBar - bottomBar;
+
       this.ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-      
+      this.ctx.fillRect(0, areaY, this.canvas.width, areaHeight);
+
       this.ctx.fillStyle = '#FFFFFF';
       this.ctx.font = 'bold 48px monospace';
       this.ctx.textAlign = 'center';
-      this.ctx.fillText('PAUSED', this.canvas.width / 2, this.canvas.height / 2);
+      this.ctx.fillText('PAUSED', this.canvas.width / 2, areaY + areaHeight / 2);
       this.ctx.textAlign = 'left';
     }
 
@@ -535,23 +553,29 @@ class Game {
       this.ctx.textAlign = 'left';
     }
 
-    // Draw menu screen
+    // Draw menu screen (only over the gameplay area, not the HUD bars)
     if (this.gameState === 'menu') {
+      const topBar = 50;
+      const bottomBar = 80;
+      const areaY = topBar;
+      const areaHeight = this.canvas.height - topBar - bottomBar;
+      const centerY = areaY + areaHeight / 2;
+
       this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-      this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-      
+      this.ctx.fillRect(0, areaY, this.canvas.width, areaHeight);
+
       this.ctx.fillStyle = '#FFD700';
       this.ctx.font = 'bold 72px monospace';
       this.ctx.textAlign = 'center';
-      this.ctx.fillText('TOWER DEFENCE', this.canvas.width / 2, this.canvas.height / 2 - 100);
-      
+      this.ctx.fillText('TOWER DEFENCE', this.canvas.width / 2, centerY - 100);
+
       this.ctx.fillStyle = '#FFFFFF';
       this.ctx.font = '24px monospace';
-      this.ctx.fillText('Defend your base from waves of enemies!', this.canvas.width / 2, this.canvas.height / 2 - 30);
-      
+      this.ctx.fillText('Defend your base from waves of enemies!', this.canvas.width / 2, centerY - 30);
+
       this.ctx.fillStyle = '#7EC8FF';
       this.ctx.font = '18px monospace';
-      this.ctx.fillText('Click START to begin', this.canvas.width / 2, this.canvas.height / 2 + 30);
+      this.ctx.fillText('Click START to begin', this.canvas.width / 2, centerY + 30);
       this.ctx.textAlign = 'left';
     }
   }

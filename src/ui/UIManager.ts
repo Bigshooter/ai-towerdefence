@@ -113,13 +113,13 @@ export class UIManager {
 
     // Start/Pause buttons
     if (this.gameState === 'menu' || this.gameState === 'gameOver') {
-      const startBtnX = 580;
-      if (x >= startBtnX && x <= startBtnX + 120 && y >= uiY + 10 && y <= uiY + 50) {
+      const startBtnX = this.canvas.width / 2 - 60;
+      if (x >= startBtnX && x <= startBtnX + 120 && y >= uiY + 20 && y <= uiY + 60) {
         this.triggerStart();
       }
-    } else if (this.gameState === 'playing') {
-      const pauseBtnX = 1100;
-      if (x >= pauseBtnX && x <= pauseBtnX + 40 && y >= uiY + 10 && y <= uiY + 50) {
+    } else if (this.gameState === 'playing' || this.gameState === 'paused') {
+      const pauseBtnX = this.canvas.width - 60;
+      if (x >= pauseBtnX && x <= pauseBtnX + 40 && y >= uiY + 20 && y <= uiY + 60) {
         this.triggerPause();
       }
     }
@@ -175,6 +175,7 @@ export class UIManager {
   onSellTower?: () => void;
   onStartGame?: () => void;
   onPauseGame?: () => void;
+  onGetTowerInfo?: () => { level: number; upgradeCost: number; sellValue: number; canUpgrade: boolean } | null;
 
   private triggerPlaceTower(type: string, col: number, row: number): boolean {
     if (this.onPlaceTower) {
@@ -226,13 +227,12 @@ export class UIManager {
     ctx.fillStyle = 'rgba(26, 26, 46, 0.9)';
     ctx.fillRect(0, 0, width, 50);
 
-    // Lives (hearts)
+    // Lives (heart icon + remaining count)
     ctx.fillStyle = '#CC2200';
-    for (let i = 0; i < 10; i++) {
-      const hx = 20 + i * 25;
-      const hy = 15;
-      this.drawHeart(ctx, hx, hy, 8);
-    }
+    this.drawHeart(ctx, 26, 14, 16);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 18px monospace';
+    ctx.fillText(`${this.getLives()}`, 42, 33);
 
     // Gold
     ctx.fillStyle = '#FFD700';
@@ -289,19 +289,44 @@ export class UIManager {
     if (this.selectedTowerId) {
       const upgradeBtnX = 340;
       const sellBtnX = 430;
+      const info = this.onGetTowerInfo ? this.onGetTowerInfo() : null;
+      const gold = this.getGold();
+      const maxed = !!info && !info.canUpgrade;
+      const affordable = !!info && info.canUpgrade && gold >= info.upgradeCost;
 
       // Upgrade button
-      ctx.fillStyle = '#3DC83D';
+      ctx.fillStyle = maxed ? '#4A4A4A' : (affordable ? '#3DC83D' : '#7A5A2A');
       ctx.fillRect(upgradeBtnX, height - 60, 80, 40);
-      ctx.fillStyle = '#FFFFFF';
+      ctx.strokeStyle = affordable ? '#BFFFBF' : '#3A3A3A';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(upgradeBtnX, height - 60, 80, 40);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = affordable ? '#FFFFFF' : '#CFCFCF';
+      ctx.font = 'bold 11px monospace';
+      ctx.fillText('UPGRADE', upgradeBtnX + 40, height - 44);
       ctx.font = 'bold 12px monospace';
-      ctx.fillText('UPGRADE', upgradeBtnX + 5, height - 35);
+      if (maxed) {
+        ctx.fillStyle = '#FFD700';
+        ctx.fillText('MAX', upgradeBtnX + 40, height - 29);
+      } else if (info) {
+        ctx.fillStyle = affordable ? '#FFD700' : '#E06666';
+        ctx.fillText(`${info.upgradeCost}g`, upgradeBtnX + 40, height - 29);
+      }
 
       // Sell button
       ctx.fillStyle = '#CC2200';
       ctx.fillRect(sellBtnX, height - 60, 80, 40);
+      ctx.strokeStyle = '#FF8866';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(sellBtnX, height - 60, 80, 40);
       ctx.fillStyle = '#FFFFFF';
-      ctx.fillText('SELL', sellBtnX + 15, height - 35);
+      ctx.font = 'bold 11px monospace';
+      ctx.fillText('SELL', sellBtnX + 40, height - 44);
+      ctx.font = 'bold 12px monospace';
+      ctx.fillStyle = '#FFD700';
+      ctx.fillText(info ? `+${info.sellValue}g` : '', sellBtnX + 40, height - 29);
+
+      ctx.textAlign = 'left';
     }
 
     // Start/Pause button
@@ -350,5 +375,6 @@ export class UIManager {
 
   // Data getters for rendering
   getGold(): number { return (window as any).gameData?.gold ?? 0; }
+  getLives(): number { return (window as any).gameData?.lives ?? 0; }
   getWave(): number { return (window as any).gameData?.wave ?? 1; }
 }
