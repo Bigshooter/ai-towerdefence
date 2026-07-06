@@ -102,35 +102,111 @@ export class AudioManager {
     }
   }
 
-  startBGM(): void {
-    if (!this.audioContext || this.isPlaying) return;
+  startBGM(waveContext?: { waveNumber: number; bossWave: boolean }): void {
+    if (!this.audioContext) return;
     if (this.audioContext.state === 'suspended') this.audioContext.resume();
+
+    // Stop any existing BGM before starting a new one with different parameters.
+    // Must run before setting isPlaying so re-starting with new wave params works.
+    this.stopBGM();
     this.isPlaying = true;
 
-    const stepDur = 0.28;      // seconds per arpeggio step
-    const stepsPerChord = 8;   // one bar per chord
+    const isBoss = waveContext?.bossWave ?? false;
+    const waveNum = waveContext?.waveNumber ?? 1;
+
+    // === Determine musical arrangement based on wave tier ===
+    let bassNotes: number[];
+    let arpNotes: number[];
+    let arpType: OscillatorType;
+    let padType: OscillatorType;
+    let stepDur: number;
+    let hasPad: boolean;
+    let hasSubBass: boolean;
+
+    if (isBoss) {
+      // BOSS WAVE: Maximum intensity — 2x tempo, all layers active, dissonant chords
+      bassNotes = [65.41, 73.42, 82.41, 87.31]; // C2 D2 E2 F2 (chromatic descent)
+      arpNotes = [261.63, 311.13, 392.00, 523.25]; // C4 d5 G5 c6 (minor triad + dissonance)
+      arpType = 'sawtooth';
+      padType = 'square';
+      stepDur = 0.14; // 2x speed
+      hasPad = true;
+      hasSubBass = true;
+    } else if (waveNum <= 4) {
+      // EARLY WAVES: Calm, ambient — slow sine arpeggio with soft pads
+      bassNotes = [110.00, 130.81, 146.83, 164.81]; // A2 C3 D3 E3
+      arpNotes = [220.00, 261.63, 329.63, 392.00]; // A3 C4 E4 G4
+      arpType = 'sine';
+      padType = 'triangle';
+      stepDur = 0.35;
+      hasPad = true;
+      hasSubBass = false;
+    } else if (waveNum <= 9) {
+      // MID WAVES: Building tension — square arpeggio with punchy bass
+      bassNotes = [82.41, 98.00, 110.00, 130.81]; // E2 G2 A2 C3
+      arpNotes = [329.63, 392.00, 440.00, 523.25]; // E4 G4 A4 c5
+      arpType = 'square';
+      padType = 'sawtooth';
+      stepDur = 0.22;
+      hasPad = true;
+      hasSubBass = false;
+    } else {
+      // LATE WAVES: Aggressive — sawtooth bass, complex arpeggio patterns
+      bassNotes = [55.00, 65.41, 73.42, 82.41]; // A1 C2 D2 E2 (sub-bass)
+      arpNotes = [440.00, 523.25, 587.33, 659.25]; // A4 c5 d5 e5
+      arpType = 'sawtooth';
+      padType = 'square';
+      stepDur = 0.18;
+      hasPad = true;
+      hasSubBass = true;
+    }
+
+    const stepsPerChord = 8;
     let step = 0;
+
+    // Wave-specific seed for chord selection variety
+    const chordSeed = Math.floor(waveNum * 1.618);
 
     const tick = () => {
       if (!this.isPlaying || !this.audioContext) return;
       const ctx = this.audioContext;
       const t = ctx.currentTime;
-      const chord = BGM_CHORDS[Math.floor(step / stepsPerChord) % BGM_CHORDS.length];
+      const barIdx = Math.floor(step / stepsPerChord);
+      const chordIdx = (chordSeed + barIdx) % bassNotes.length;
       const localStep = step % stepsPerChord;
       const barLen = stepDur * stepsPerChord;
 
-      // On the downbeat of each bar: warm bass note + soft sustained pad
+      // On the downbeat of each bar: bass note + optional pad
       if (localStep === 0) {
-        this.playMusicNote(chord.bass, barLen * 0.95, 'triangle', 0.55, t);
-        for (const n of chord.notes) {
-          this.playMusicNote(n / 2, barLen * 0.95, 'sine', 0.16, t);
+        // Main bass — triangle for warmth and clarity
+        this.playMusicNote(bassNotes[chordIdx], barLen * 0.95, 'triangle', 0.6, t);
+
+        // Sub-bass: removed to eliminate rhythmic mismatch with main bass
+        // (was ringing shorter than triangle, creating "on-off" pattern)
+
+        // Sustained pad on downbeat — very short envelope so it doesn't bleed into the next chord
+        if (hasPad) {
+          for (const n of arpNotes) {
+            this.playMusicNote(n / 4, barLen * 0.25, padType, 0.08, t);
+          }
         }
       }
 
-      // Gentle square-wave arpeggio walking through the chord
-      const arp = chord.notes[localStep % chord.notes.length];
-      const freq = localStep % 4 === 3 ? arp * 2 : arp;
-      this.playMusicNote(freq, stepDur * 0.9, 'square', 0.2, t);
+      // Arpeggio — different patterns per tier
+      const arpIdx = localStep % arpNotes.length;
+      let freq: number;
+      if (isBoss) {
+        // Boss: consistent octave for steady drive
+        freq = arpNotes[arpIdx] * 2;
+      } else if (waveNum <= 4) {
+        // Early: gentle ascending pattern — no octave jumps
+        freq = arpNotes[arpIdx];
+      } else {
+        // Mid/Late: consistent single octave for tight rhythm
+        freq = arpNotes[arpIdx];
+      }
+
+      this.playMusicNote(freq, stepDur * 0.85, arpType, isBoss ? 0.25 : 0.18, t);
 
       step++;
       this.bgmTimer = window.setTimeout(tick, stepDur * 1000);

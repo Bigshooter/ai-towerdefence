@@ -185,6 +185,9 @@ class Game {
       this.audioManager.playSFX('waveStart');
     }
 
+    // Update BGM to match the new wave's intensity and character
+    this.audioManager.startBGM({ waveNumber: this.gameData.wave, bossWave: waveConfig.bossWave });
+
     // Queue the wave's enemies; spawning is advanced by update(dt).
     this.spawnQueue = [...waveConfig.enemies];
     this.enemiesRemaining = waveConfig.enemies.length;
