@@ -46,6 +46,10 @@ class Game {
   private wavePauseDuration: number = 3;
   private enemiesRemaining: number = 0;
   private spawningComplete: boolean = false;
+  private spawnQueue: EnemyType[] = [];
+  private spawnTimer: number = 0;
+  private currentSpawnInterval: number = 1;
+  private interWaveTimer: number = 0;
 
   constructor() {
     this.canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
@@ -116,6 +120,23 @@ class Game {
     this.uiManager.onPauseGame = () => {
       this.togglePause();
     };
+
+    this.uiManager.onSetMusicVolume = (v) => {
+      this.audioManager.setMusicVolume(v);
+    };
+
+    this.uiManager.onSetSfxVolume = (v) => {
+      this.audioManager.setSfxVolume(v);
+    };
+
+    this.uiManager.onGetVolumes = () => ({
+      music: this.audioManager.getMusicVolume(),
+      sfx: this.audioManager.getSfxVolume(),
+    });
+
+    this.uiManager.onPreviewSfx = () => {
+      this.audioManager.playSFX('click');
+    };
   }
 
   private startNewGame(): void {
@@ -132,12 +153,12 @@ class Game {
     this.economySystem = new EconomySystem(150);
     this.healthSystem = new HealthSystem(20, 20);
 
-    // Start first wave after brief delay
-    setTimeout(() => {
-      if (this.gameState === 'playing') {
-        this.startNextWave();
-      }
-    }, 1000);
+    // Reset wave scheduling. All wave timing is advanced by update(dt) so it
+    // pauses and resumes correctly with the game state.
+    this.spawnQueue = [];
+    this.spawnTimer = 0;
+    this.spawningComplete = false;
+    this.interWaveTimer = 1; // brief delay before the first wave
 
     // Start BGM
     this.audioManager.startBGM();
@@ -157,30 +178,19 @@ class Game {
 
   private startNextWave(): void {
     const waveConfig = this.waveSystem.generateWave(this.gameData.wave);
-    this.enemiesRemaining = waveConfig.enemies.length;
-    
+
     if (waveConfig.bossWave) {
       this.audioManager.playSFX('bossSpawn');
     } else {
       this.audioManager.playSFX('waveStart');
     }
 
-    // Start spawning enemies
+    // Queue the wave's enemies; spawning is advanced by update(dt).
+    this.spawnQueue = [...waveConfig.enemies];
+    this.enemiesRemaining = waveConfig.enemies.length;
+    this.currentSpawnInterval = waveConfig.spawnInterval;
+    this.spawnTimer = 0;
     this.spawningComplete = false;
-    let spawnIndex = 0;
-    const spawnInterval = setInterval(() => {
-      if (this.gameState !== 'playing' || spawnIndex >= waveConfig.enemies.length) {
-        clearInterval(spawnInterval);
-        if (spawnIndex >= waveConfig.enemies.length) {
-          this.spawningComplete = true;
-        }
-        return;
-      }
-
-      const enemyType = waveConfig.enemies[spawnIndex];
-      this.spawnEnemy(enemyType);
-      spawnIndex++;
-    }, waveConfig.spawnInterval * 1000);
   }
 
   private spawnEnemy(type: EnemyType): void {
@@ -298,6 +308,28 @@ class Game {
 
     // Update economy
     this.economySystem.update(dt);
+
+    // Advance the between-wave countdown, then start the next wave
+    if (this.interWaveTimer > 0) {
+      this.interWaveTimer -= dt;
+      if (this.interWaveTimer <= 0) {
+        this.interWaveTimer = 0;
+        this.startNextWave();
+      }
+    }
+
+    // Spawn queued enemies at the wave's spawn interval
+    if (this.spawnQueue.length > 0) {
+      this.spawnTimer += dt;
+      if (this.spawnTimer >= this.currentSpawnInterval) {
+        this.spawnTimer -= this.currentSpawnInterval;
+        const type = this.spawnQueue.shift()!;
+        this.spawnEnemy(type);
+        if (this.spawnQueue.length === 0) {
+          this.spawningComplete = true;
+        }
+      }
+    }
 
     // Update enemies
     for (const enemy of this.enemies) {
@@ -433,18 +465,14 @@ class Game {
 
   private handleWaveComplete(): void {
     this.waveCompleteTimer = 0;
-    
+
     // Bonus gold for completing wave
     const bonusGold = 20 + this.gameData.wave * 5;
     this.gameData.gold += bonusGold;
 
-    // Start next wave after pause
-    setTimeout(() => {
-      if (this.gameState === 'playing') {
-        this.gameData.wave++;
-        this.startNextWave();
-      }
-    }, this.wavePauseDuration * 1000);
+    // Advance to the next wave after a pause (countdown driven by update(dt))
+    this.gameData.wave++;
+    this.interWaveTimer = this.wavePauseDuration;
   }
 
   private gameOver(): void {
@@ -578,6 +606,9 @@ class Game {
       this.ctx.fillText('Click START to begin', this.canvas.width / 2, centerY + 30);
       this.ctx.textAlign = 'left';
     }
+
+    // Settings panel renders on top of everything else
+    this.uiManager.renderSettings(this.ctx);
   }
 }
 

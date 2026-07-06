@@ -7,6 +7,8 @@ export class UIManager {
   private selectedTowerType: string | null = null;
   private hoveredTile: { col: number; row: number } | null = null;
   private selectedTowerId: string | null = null;
+  private showSettings: boolean = false;
+  private draggingSlider: 'music' | 'sfx' | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -14,14 +16,26 @@ export class UIManager {
     this.setupEventListeners();
   }
 
+  private toCanvasCoords(e: MouseEvent): { x: number; y: number } {
+    const rect = this.canvas.getBoundingClientRect();
+    const scaleX = this.canvas.width / rect.width;
+    const scaleY = this.canvas.height / rect.height;
+    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+  }
+
   private setupEventListeners(): void {
-    // Mouse move for hover effects
+    // Mouse move for hover effects (and settings slider dragging)
     this.canvas.addEventListener('mousemove', (e) => {
-      const rect = this.canvas.getBoundingClientRect();
-      const scaleX = this.canvas.width / rect.width;
-      const scaleY = this.canvas.height / rect.height;
-      const x = (e.clientX - rect.left) * scaleX;
-      const y = (e.clientY - rect.top) * scaleY;
+      const { x, y } = this.toCanvasCoords(e);
+
+      // Dragging a volume slider takes priority
+      if (this.draggingSlider) {
+        this.setSliderFromX(this.draggingSlider, x);
+        return;
+      }
+
+      // No hover updates while the settings panel is open
+      if (this.showSettings) return;
 
       // Check if hovering over UI area (bottom 80px)
       if (y > this.canvas.height - 80) {
@@ -34,13 +48,31 @@ export class UIManager {
       this.hoveredTile = { col, row };
     });
 
+    // Begin dragging a slider when pressing on one
+    this.canvas.addEventListener('mousedown', (e) => {
+      if (!this.showSettings) return;
+      const { x, y } = this.toCanvasCoords(e);
+      const slider = this.hitSlider(x, y);
+      if (slider) {
+        this.draggingSlider = slider;
+        this.setSliderFromX(slider, x);
+      }
+    });
+
+    const endDrag = () => {
+      if (this.draggingSlider === 'sfx' && this.onPreviewSfx) this.onPreviewSfx();
+      this.draggingSlider = null;
+    };
+    window.addEventListener('mouseup', endDrag);
+
     // Click to place tower or select
     this.canvas.addEventListener('click', (e) => {
-      const rect = this.canvas.getBoundingClientRect();
-      const scaleX = this.canvas.width / rect.width;
-      const scaleY = this.canvas.height / rect.height;
-      const x = (e.clientX - rect.left) * scaleX;
-      const y = (e.clientY - rect.top) * scaleY;
+      const { x, y } = this.toCanvasCoords(e);
+
+      // Settings gear / panel take priority over everything else
+      if (this.handleSettingsClick(x, y)) {
+        return;
+      }
 
       // Check UI area clicks
       if (y > this.canvas.height - 80) {
@@ -63,6 +95,7 @@ export class UIManager {
     document.addEventListener('keydown', (e) => {
       switch (e.key) {
         case 'Escape':
+          if (this.showSettings) { this.showSettings = false; break; }
           this.selectedTowerType = null;
           this.selectedTowerId = null;
           break;
@@ -176,6 +209,77 @@ export class UIManager {
   onStartGame?: () => void;
   onPauseGame?: () => void;
   onGetTowerInfo?: () => { level: number; upgradeCost: number; sellValue: number; canUpgrade: boolean } | null;
+  onSetMusicVolume?: (v: number) => void;
+  onSetSfxVolume?: (v: number) => void;
+  onGetVolumes?: () => { music: number; sfx: number };
+  onPreviewSfx?: () => void;
+
+  // ---- Settings panel geometry & interaction ----
+
+  private getGearRect(): { x: number; y: number; w: number; h: number } {
+    const size = 34;
+    return { x: this.canvas.width - size - 10, y: 8, w: size, h: size };
+  }
+
+  private getSettingsLayout() {
+    const w = 460;
+    const h = 300;
+    const x = (this.canvas.width - w) / 2;
+    const y = (this.canvas.height - h) / 2;
+    const trackX = x + 150;
+    const trackW = w - 200;
+    return {
+      x, y, w, h, trackX, trackW,
+      musicY: y + 130,
+      sfxY: y + 200,
+      closeBtn: { x: x + w - 42, y: y + 14, w: 28, h: 28 },
+    };
+  }
+
+  private hitSlider(x: number, y: number): 'music' | 'sfx' | null {
+    const L = this.getSettingsLayout();
+    if (x < L.trackX - 12 || x > L.trackX + L.trackW + 12) return null;
+    if (Math.abs(y - L.musicY) <= 18) return 'music';
+    if (Math.abs(y - L.sfxY) <= 18) return 'sfx';
+    return null;
+  }
+
+  private setSliderFromX(which: 'music' | 'sfx', x: number): void {
+    const L = this.getSettingsLayout();
+    const v = Math.max(0, Math.min(1, (x - L.trackX) / L.trackW));
+    if (which === 'music') this.onSetMusicVolume?.(v);
+    else this.onSetSfxVolume?.(v);
+  }
+
+  /** Returns true if the click was consumed by the gear button or settings panel. */
+  private handleSettingsClick(x: number, y: number): boolean {
+    const gear = this.getGearRect();
+    if (x >= gear.x && x <= gear.x + gear.w && y >= gear.y && y <= gear.y + gear.h) {
+      this.showSettings = !this.showSettings;
+      return true;
+    }
+
+    if (!this.showSettings) return false;
+
+    const L = this.getSettingsLayout();
+    const c = L.closeBtn;
+    if (x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h) {
+      this.showSettings = false;
+      return true;
+    }
+
+    const slider = this.hitSlider(x, y);
+    if (slider) {
+      this.setSliderFromX(slider, x);
+      if (slider === 'sfx' && this.onPreviewSfx) this.onPreviewSfx();
+      return true;
+    }
+
+    // Clicks anywhere inside the panel are consumed; clicks outside close it
+    if (x >= L.x && x <= L.x + L.w && y >= L.y && y <= L.y + L.h) return true;
+    this.showSettings = false;
+    return true;
+  }
 
   private triggerPlaceTower(type: string, col: number, row: number): boolean {
     if (this.onPlaceTower) {
@@ -245,6 +349,9 @@ export class UIManager {
     ctx.fillStyle = '#7EC8FF';
     ctx.font = 'bold 16px monospace';
     ctx.fillText(`Wave: ${this.getWave()}`, 420, 35);
+
+    // Settings gear button (top-right)
+    this.renderGearButton(ctx);
 
     // Bottom UI bar
     ctx.fillStyle = 'rgba(26, 26, 46, 0.9)';
@@ -371,6 +478,119 @@ export class UIManager {
     ctx.bezierCurveTo(x, y + size * 0.7, x + size / 2, y + size / 2, x + size / 2, y + size / 4);
     ctx.bezierCurveTo(x + size / 2, y, x, y, x, y + size / 4);
     ctx.fill();
+  }
+
+  private renderGearButton(ctx: CanvasRenderingContext2D): void {
+    const g = this.getGearRect();
+    const cx = g.x + g.w / 2;
+    const cy = g.y + g.h / 2;
+
+    // Button background
+    ctx.fillStyle = this.showSettings ? 'rgba(255, 215, 0, 0.25)' : 'rgba(100, 100, 100, 0.4)';
+    ctx.fillRect(g.x, g.y, g.w, g.h);
+    ctx.strokeStyle = this.showSettings ? '#FFD700' : '#8A8A8A';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(g.x, g.y, g.w, g.h);
+
+    // Cog: outer teeth + ring + hub
+    ctx.fillStyle = this.showSettings ? '#FFD700' : '#E0E0E0';
+    const teeth = 8;
+    const rOuter = 11;
+    const rInner = 7;
+    ctx.beginPath();
+    for (let i = 0; i < teeth * 2; i++) {
+      const ang = (i / (teeth * 2)) * Math.PI * 2;
+      const r = i % 2 === 0 ? rOuter : rInner;
+      const px = cx + Math.cos(ang) * r;
+      const py = cy + Math.sin(ang) * r;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+
+    // Hub hole
+    ctx.fillStyle = 'rgba(26, 26, 46, 0.95)';
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /** Draws the settings overlay. Called last so it sits above all other overlays. */
+  renderSettings(ctx: CanvasRenderingContext2D): void {
+    if (!this.showSettings) return;
+
+    const L = this.getSettingsLayout();
+    const vols = this.onGetVolumes ? this.onGetVolumes() : { music: 0, sfx: 0 };
+
+    // Dim the whole screen
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+    // Panel
+    ctx.fillStyle = '#1E1E32';
+    ctx.fillRect(L.x, L.y, L.w, L.h);
+    ctx.strokeStyle = '#FFD700';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(L.x, L.y, L.w, L.h);
+
+    // Title
+    ctx.fillStyle = '#FFD700';
+    ctx.font = 'bold 26px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('SETTINGS', L.x + 24, L.y + 42);
+
+    // Close button (X)
+    const c = L.closeBtn;
+    ctx.fillStyle = '#CC2200';
+    ctx.fillRect(c.x, c.y, c.w, c.h);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 18px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('X', c.x + c.w / 2, c.y + c.h / 2 + 6);
+    ctx.textAlign = 'left';
+
+    this.drawSlider(ctx, 'Music', L.trackX, L.musicY, L.trackW, vols.music, '#7EC8FF');
+    this.drawSlider(ctx, 'Sound FX', L.trackX, L.sfxY, L.trackW, vols.sfx, '#3DC83D');
+  }
+
+  private drawSlider(
+    ctx: CanvasRenderingContext2D,
+    label: string,
+    trackX: number,
+    trackY: number,
+    trackW: number,
+    value: number,
+    color: string,
+  ): void {
+    // Label (to the left of the track)
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 16px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(label, trackX - 20, trackY + 6);
+
+    // Track
+    ctx.fillStyle = '#3A3A50';
+    ctx.fillRect(trackX, trackY - 4, trackW, 8);
+
+    // Filled portion
+    ctx.fillStyle = color;
+    ctx.fillRect(trackX, trackY - 4, trackW * value, 8);
+
+    // Handle
+    const hx = trackX + trackW * value;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.beginPath();
+    ctx.arc(hx, trackY, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Percentage
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = '14px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${Math.round(value * 100)}%`, trackX + trackW + 16, trackY + 5);
   }
 
   // Data getters for rendering
