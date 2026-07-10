@@ -1,5 +1,6 @@
 import { BaseEntity } from './BaseEntity';
 import { EnemyType, EnemyStats, Position } from '../types';
+import { SpaceSprites } from '../visuals/SpaceSprites';
 
 export interface EnemyData extends EnemyStats {
   type: EnemyType;
@@ -105,9 +106,10 @@ export class Enemy extends BaseEntity {
   }
 
   getHpMultiplier(): number {
-    // HP scales with wave number
+    // HP scales with wave number and selected difficulty.
     const wave = (globalThis as any).gameState?.wave ?? 1;
-    return 1 + (wave - 1) * 0.15;
+    const difficultyHpMultiplier = (globalThis as any).gameState?.difficultyHpMultiplier ?? 1;
+    return (1 + (wave - 1) * 0.15) * difficultyHpMultiplier;
   }
 
   takeDamage(amount: number): number {
@@ -134,24 +136,7 @@ export class Enemy extends BaseEntity {
     const y = this.position.y;
     const s = this.size.width;
 
-    // Draw based on type
-    switch (this.data.type) {
-      case 'normal':
-        this.renderNormal(ctx, x, y, s);
-        break;
-      case 'speed':
-        this.renderSpeed(ctx, x, y, s);
-        break;
-      case 'armored':
-        this.renderArmored(ctx, x, y, s);
-        break;
-      case 'regenerating':
-        this.renderRegenerating(ctx, x, y, s);
-        break;
-      case 'boss':
-        this.renderBoss(ctx, x, y, s);
-        break;
-    }
+    SpaceSprites.drawEnemy(ctx, this.data.type, x, y, s, this.animFrame, Date.now() / 1000);
 
     // Draw HP bar
     this.renderHpBar(ctx);

@@ -1,4 +1,5 @@
-import { GameState } from '../types';
+import { DifficultyMode, GameState, TowerType } from '../types';
+import { SpaceSprites } from '../visuals/SpaceSprites';
 
 export class UIManager {
   private canvas: HTMLCanvasElement;
@@ -8,7 +9,10 @@ export class UIManager {
   private hoveredTile: { col: number; row: number } | null = null;
   private selectedTowerId: string | null = null;
   private showSettings: boolean = false;
+  private showHelp: boolean = false;
   private draggingSlider: 'music' | 'sfx' | null = null;
+  private selectedDifficulty: DifficultyMode = 'easy';
+  private showDifficultyDropdown: boolean = false;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -35,7 +39,7 @@ export class UIManager {
       }
 
       // No hover updates while the settings panel is open
-      if (this.showSettings) return;
+      if (this.showSettings || this.showHelp) return;
 
       // Check if hovering over UI area (bottom 80px)
       if (y > this.canvas.height - 80) {
@@ -74,6 +78,17 @@ export class UIManager {
         return;
       }
 
+      // Help modal takes priority over game and UI interactions.
+      if (this.handleHelpClick(x, y)) {
+        return;
+      }
+
+      // Difficulty option list is drawn above the bottom bar; handle those
+      // clicks before the UI-area gate.
+      if (this.handleDifficultyDropdownOptionsClick(x, y)) {
+        return;
+      }
+
       // Check UI area clicks
       if (y > this.canvas.height - 80) {
         this.handleUIClick(x, y);
@@ -93,23 +108,23 @@ export class UIManager {
 
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
+      const towerUiVisible = this.gameState === 'playing' || this.gameState === 'paused' || this.gameState === 'waveComplete';
       switch (e.key) {
         case 'Escape':
           if (this.showSettings) { this.showSettings = false; break; }
+          if (this.showHelp) { this.showHelp = false; break; }
           this.selectedTowerType = null;
           this.selectedTowerId = null;
           break;
-        case '1':
-          this.selectTowerType('archer');
-          break;
-        case '2':
-          this.selectTowerType('cannon');
-          break;
-        case '3':
-          this.selectTowerType('sniper');
-          break;
-        case '4':
-          this.selectTowerType('ice');
+        default:
+          if (!towerUiVisible) break;
+          if (!/^[1-9]$/.test(e.key)) break;
+
+          const idx = parseInt(e.key, 10) - 1;
+          const towerTypes = this.getAvailableTowerTypes();
+          if (idx >= 0 && idx < towerTypes.length) {
+            this.selectTowerType(towerTypes[idx].type, false);
+          }
           break;
       }
     });
@@ -117,21 +132,40 @@ export class UIManager {
 
   private handleUIClick(x: number, y: number): void {
     const uiY = this.canvas.height - 80;
-    
-    // Tower selection buttons (4 buttons, 60px each)
-    for (let i = 0; i < 4; i++) {
-      const btnX = 50 + i * 70;
-      if (x >= btnX && x <= btnX + 60 && y >= uiY && y <= uiY + 60) {
-        const types: ('archer' | 'cannon' | 'sniper' | 'ice')[] = ['archer', 'cannon', 'sniper', 'ice'];
-        this.selectTowerType(types[i]);
+    const towerUiVisible = this.gameState === 'playing' || this.gameState === 'paused' || this.gameState === 'waveComplete';
+
+    // Difficulty dropdown is available before a run starts.
+    if (this.gameState === 'menu' || this.gameState === 'gameOver') {
+      const dropdown = this.getDifficultyDropdownRect();
+      if (x >= dropdown.x && x <= dropdown.x + dropdown.w && y >= dropdown.y && y <= dropdown.y + dropdown.h) {
+        this.showDifficultyDropdown = !this.showDifficultyDropdown;
         return;
       }
     }
 
+    if (this.gameState === 'menu' || this.gameState === 'gameOver' || towerUiVisible) {
+      const help = this.getHelpButtonRect();
+      if (x >= help.x && x <= help.x + help.w && y >= help.y && y <= help.y + help.h) {
+        this.showHelp = true;
+        return;
+      }
+    }
+    
+    // Tower selection buttons (4 buttons, 60px each)
+    if (towerUiVisible) {
+      const towerTypes = this.getAvailableTowerTypes();
+      for (let i = 0; i < towerTypes.length; i++) {
+        const btnX = 50 + i * 70;
+        if (x >= btnX && x <= btnX + 60 && y >= uiY && y <= uiY + 60) {
+          this.selectTowerType(towerTypes[i].type);
+          return;
+        }
+      }
+    }
+
     // Upgrade/Sell buttons (if tower selected)
-    if (this.selectedTowerId) {
-      const upgradeBtnX = 340;
-      const sellBtnX = 430;
+    if (towerUiVisible && this.selectedTowerId) {
+      const { upgradeX: upgradeBtnX, sellX: sellBtnX } = this.getUpgradeButtonLayout();
       
       if (x >= upgradeBtnX && x <= upgradeBtnX + 80 && y >= uiY + 20 && y <= uiY + 60) {
         this.triggerUpgrade();
@@ -151,8 +185,14 @@ export class UIManager {
         this.triggerStart();
       }
     } else if (this.gameState === 'playing' || this.gameState === 'paused') {
-      const pauseBtnX = this.canvas.width - 60;
-      if (x >= pauseBtnX && x <= pauseBtnX + 40 && y >= uiY + 20 && y <= uiY + 60) {
+      const reset = this.getResetButtonRect();
+      if (x >= reset.x && x <= reset.x + reset.w && y >= reset.y && y <= reset.y + reset.h) {
+        this.triggerReset();
+        return;
+      }
+
+      const pause = this.getPauseButtonRect();
+      if (x >= pause.x && x <= pause.x + pause.w && y >= pause.y && y <= pause.y + pause.h) {
         this.triggerPause();
       }
     }
@@ -172,8 +212,8 @@ export class UIManager {
     }
   }
 
-  selectTowerType(type: 'archer' | 'cannon' | 'sniper' | 'ice'): void {
-    if (this.selectedTowerType === type) {
+  selectTowerType(type: 'archer' | 'cannon' | 'sniper' | 'ice' | 'flamethrower', allowToggle: boolean = true): void {
+    if (allowToggle && this.selectedTowerType === type) {
       this.selectedTowerType = null; // Deselect
     } else {
       this.selectedTowerType = type;
@@ -206,9 +246,16 @@ export class UIManager {
   onSelectTower?: (col: number, row: number) => void;
   onUpgradeTower?: () => void;
   onSellTower?: () => void;
-  onStartGame?: () => void;
+  onResetGame?: () => void;
+  onStartGame?: (difficulty: DifficultyMode) => void;
   onPauseGame?: () => void;
-  onGetTowerInfo?: () => { level: number; upgradeCost: number; sellValue: number; canUpgrade: boolean } | null;
+  onGetTowerInfo?: () => {
+    level: number;
+    upgradeCost: number;
+    sellValue: number;
+    canUpgrade: boolean;
+    upgradePreview: string;
+  } | null;
   onSetMusicVolume?: (v: number) => void;
   onSetSfxVolume?: (v: number) => void;
   onGetVolumes?: () => { music: number; sfx: number };
@@ -219,6 +266,134 @@ export class UIManager {
   private getGearRect(): { x: number; y: number; w: number; h: number } {
     const size = 34;
     return { x: this.canvas.width - size - 10, y: 8, w: size, h: size };
+  }
+
+  private getDifficultyDropdownRect(): { x: number; y: number; w: number; h: number } {
+    const uiY = this.canvas.height - 80;
+    return { x: this.canvas.width / 2 - 230, y: uiY + 20, w: 150, h: 40 };
+  }
+
+  private getHelpButtonRect(): { x: number; y: number; w: number; h: number } {
+    const uiY = this.canvas.height - 80;
+    return { x: this.canvas.width - 60, y: uiY + 20, w: 40, h: 40 };
+  }
+
+  private getPauseButtonRect(): { x: number; y: number; w: number; h: number } {
+    const uiY = this.canvas.height - 80;
+    return { x: this.canvas.width - 150, y: uiY + 20, w: 80, h: 40 };
+  }
+
+  private getResetButtonRect(): { x: number; y: number; w: number; h: number } {
+    const pause = this.getPauseButtonRect();
+    return { x: pause.x - 90, y: pause.y, w: 80, h: 40 };
+  }
+
+  private getHelpLayout() {
+    const w = 820;
+    const h = 560;
+    const x = (this.canvas.width - w) / 2;
+    const y = (this.canvas.height - h) / 2;
+    return {
+      x,
+      y,
+      w,
+      h,
+      closeBtn: { x: x + w - 44, y: y + 12, w: 30, h: 30 },
+    };
+  }
+
+  private handleHelpClick(x: number, y: number): boolean {
+    if (!this.showHelp) return false;
+
+    const L = this.getHelpLayout();
+    const c = L.closeBtn;
+    if (x >= c.x && x <= c.x + c.w && y >= c.y && y <= c.y + c.h) {
+      this.showHelp = false;
+      return true;
+    }
+
+    if (x >= L.x && x <= L.x + L.w && y >= L.y && y <= L.y + L.h) {
+      return true;
+    }
+
+    this.showHelp = false;
+    return true;
+  }
+
+  private getDifficultyOptionRect(index: number): { x: number; y: number; w: number; h: number } {
+    const d = this.getDifficultyDropdownRect();
+    const w = 58;
+    const h = 24;
+    const gap = 4;
+    const totalW = w * 3 + gap * 2;
+    const startX = d.x - totalW - 10;
+    const y = d.y + 8;
+    return { x: startX + index * (w + gap), y, w, h };
+  }
+
+  private handleDifficultyDropdownOptionsClick(x: number, y: number): boolean {
+    if (!this.showDifficultyDropdown) return false;
+    if (this.gameState !== 'menu' && this.gameState !== 'gameOver') return false;
+
+    const modes: DifficultyMode[] = ['easy', 'medium', 'hard'];
+    for (let i = 0; i < modes.length; i++) {
+      const opt = this.getDifficultyOptionRect(i);
+      if (x >= opt.x && x <= opt.x + opt.w && y >= opt.y && y <= opt.y + opt.h) {
+        this.selectedDifficulty = modes[i];
+        this.showDifficultyDropdown = false;
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private formatDifficulty(mode: DifficultyMode): string {
+    return mode.charAt(0).toUpperCase() + mode.slice(1);
+  }
+
+  private getActiveDifficulty(): DifficultyMode {
+    const mode = (globalThis as any).gameState?.difficulty as DifficultyMode | undefined;
+    if (mode === 'easy' || mode === 'medium' || mode === 'hard') return mode;
+    return this.selectedDifficulty;
+  }
+
+  private getAvailableTowerTypes(): { type: TowerType; name: string; cost: number }[] {
+    const base: { type: TowerType; name: string; cost: number }[] = [
+      { type: 'archer', name: 'Archer', cost: 50 },
+      { type: 'cannon', name: 'Cannon', cost: 100 },
+      { type: 'sniper', name: 'Sniper', cost: 150 },
+      { type: 'ice', name: 'Ice', cost: 75 },
+    ];
+
+    if (this.getWave() >= 25) {
+      base.push({ type: 'flamethrower', name: 'Flame', cost: 250 });
+    }
+
+    return base;
+  }
+
+  private getUpgradeButtonLayout(): { upgradeX: number; sellX: number } {
+    const hasFlamethrower = this.getAvailableTowerTypes().some(t => t.type === 'flamethrower');
+    if (hasFlamethrower) {
+      return { upgradeX: 410, sellX: 500 };
+    }
+    return { upgradeX: 340, sellX: 430 };
+  }
+
+  private getTowerRangePreview(type: string): { min: number; max: number } {
+    const minRanges: Record<string, number> = {
+      archer: 120,
+      cannon: 100,
+      sniper: 200,
+      ice: 90,
+      flamethrower: 100,
+    };
+
+    const min = minRanges[type] ?? 100;
+    // Projected max at level 5 using the tower's legacy 10% per-level range scaling.
+    const max = Math.round(min * Math.pow(1.1, 4));
+    return { min, max };
   }
 
   private getSettingsLayout() {
@@ -284,9 +459,6 @@ export class UIManager {
   private triggerPlaceTower(type: string, col: number, row: number): boolean {
     if (this.onPlaceTower) {
       const success = this.onPlaceTower(type, col, row);
-      if (success) {
-        this.selectedTowerType = null; // Deselect after successful placement
-      }
       return success;
     }
     return false;
@@ -312,7 +484,8 @@ export class UIManager {
 
   private triggerStart(): void {
     if (this.onStartGame) {
-      this.onStartGame();
+      this.showDifficultyDropdown = false;
+      this.onStartGame(this.selectedDifficulty);
     }
   }
 
@@ -322,35 +495,82 @@ export class UIManager {
     }
   }
 
+  private triggerReset(): void {
+    if (this.onResetGame) {
+      this.showHelp = false;
+      this.showSettings = false;
+      this.selectedTowerType = null;
+      this.selectedTowerId = null;
+      this.onResetGame();
+    }
+  }
+
   // Render UI overlay
   render(ctx: CanvasRenderingContext2D): void {
     const width = this.canvas.width;
     const height = this.canvas.height;
+    const towerUiVisible = this.gameState === 'playing' || this.gameState === 'paused' || this.gameState === 'waveComplete';
 
     // Top HUD bar
     ctx.fillStyle = 'rgba(26, 26, 46, 0.9)';
     ctx.fillRect(0, 0, width, 50);
 
-    // Lives (heart icon + remaining count)
+    // Left-aligned HUD metrics cluster (health, gold, wave)
+    const hudCenterY = 25;
+    const hudStartX = 18;
+    const hudGap = 132;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+
+    // Health
     ctx.fillStyle = '#CC2200';
-    this.drawHeart(ctx, 26, 14, 16);
+    this.drawHeart(ctx, hudStartX + 8, hudCenterY - 8, 16);
     ctx.fillStyle = '#FFFFFF';
     ctx.font = 'bold 18px monospace';
-    ctx.fillText(`${this.getLives()}`, 42, 33);
+    ctx.fillText(`${this.getLives()}`, hudStartX + 24, hudCenterY);
 
     // Gold
+    const goldX = hudStartX + hudGap;
     ctx.fillStyle = '#FFD700';
     ctx.font = 'bold 16px monospace';
-    ctx.fillText('💰', 280, 35);
+    ctx.fillText('💰', goldX, hudCenterY);
     ctx.fillStyle = '#FFFFFF';
-    ctx.fillText(`${this.getGold()}`, 310, 35);
+    ctx.fillText(`${this.getGold()}`, goldX + 28, hudCenterY);
 
     // Wave
+    const waveX = hudStartX + hudGap * 2;
     ctx.fillStyle = '#7EC8FF';
     ctx.font = 'bold 16px monospace';
-    ctx.fillText(`Wave: ${this.getWave()}`, 420, 35);
+    ctx.fillText(`Wave: ${this.getWave()}`, waveX, hudCenterY);
+    ctx.textBaseline = 'alphabetic';
 
     // Settings gear button (top-right)
+    if (this.gameState === 'playing' || this.gameState === 'paused' || this.gameState === 'waveComplete') {
+      const mode = this.getActiveDifficulty();
+      const badgeW = 150;
+      const badgeH = 28;
+      const badgeX = width - 200;
+      const badgeY = 11;
+      const modeColor = mode === 'easy' ? '#6EEA8A' : (mode === 'medium' ? '#FFC767' : '#FF7A7A');
+
+      ctx.fillStyle = 'rgba(24, 34, 52, 0.92)';
+      ctx.fillRect(badgeX, badgeY, badgeW, badgeH);
+      ctx.strokeStyle = modeColor;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(badgeX, badgeY, badgeW, badgeH);
+
+      ctx.fillStyle = '#AFC7E8';
+      ctx.font = '10px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('DIFFICULTY', badgeX + 8, badgeY + 11);
+
+      ctx.fillStyle = modeColor;
+      ctx.font = 'bold 13px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(this.formatDifficulty(mode), badgeX + badgeW - 8, badgeY + 20);
+      ctx.textAlign = 'left';
+    }
+
     this.renderGearButton(ctx);
 
     // Bottom UI bar
@@ -358,44 +578,56 @@ export class UIManager {
     ctx.fillRect(0, height - 80, width, 80);
 
     // Tower selection buttons
-    const towerTypes: { type: string; name: string; color: string; cost: number }[] = [
-      { type: 'archer', name: 'Archer', color: '#3DC83D', cost: 50 },
-      { type: 'cannon', name: 'Cannon', color: '#9E9E9E', cost: 100 },
-      { type: 'sniper', name: 'Sniper', color: '#A855F7', cost: 150 },
-      { type: 'ice', name: 'Ice', color: '#7EC8FF', cost: 75 },
-    ];
+    if (towerUiVisible) {
+      const towerTypes = this.getAvailableTowerTypes();
 
-    for (let i = 0; i < towerTypes.length; i++) {
-      const btnX = 50 + i * 70;
-      const btnY = height - 70;
-      const isSelected = this.selectedTowerType === towerTypes[i].type;
+      const towerSpriteFrame = Math.floor(Date.now() / 250) % 2;
 
-      // Button background
-      ctx.fillStyle = isSelected ? 'rgba(255, 215, 0, 0.3)' : 'rgba(100, 100, 100, 0.5)';
-      ctx.fillRect(btnX, btnY, 60, 60);
+      for (let i = 0; i < towerTypes.length; i++) {
+        const btnX = 50 + i * 70;
+        const btnY = height - 70;
+        const isSelected = this.selectedTowerType === towerTypes[i].type;
 
-      // Button border
-      ctx.strokeStyle = isSelected ? '#FFD700' : '#6E6E6E';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(btnX, btnY, 60, 60);
+        // Button background
+        ctx.fillStyle = isSelected ? 'rgba(255, 215, 0, 0.3)' : 'rgba(100, 100, 100, 0.5)';
+        ctx.fillRect(btnX, btnY, 60, 60);
 
-      // Tower icon (simplified)
-      ctx.fillStyle = towerTypes[i].color;
-      ctx.fillRect(btnX + 15, btnY + 10, 30, 30);
+        // Button border
+        ctx.strokeStyle = isSelected ? '#FFD700' : '#6E6E6E';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(btnX, btnY, 60, 60);
 
-      // Name
-      ctx.fillStyle = '#FFFFFF';
-      ctx.font = '10px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText(towerTypes[i].name, btnX + 30, btnY + 50);
-      ctx.fillText(`${towerTypes[i].cost}g`, btnX + 30, btnY + 58);
-      ctx.textAlign = 'left';
+        // Tower icon (actual in-game sprite)
+        SpaceSprites.drawTower(
+          ctx,
+          towerTypes[i].type,
+          btnX + 14,
+          btnY + 6,
+          32,
+          towerSpriteFrame,
+          isSelected,
+          Date.now() / 1000,
+        );
+
+        // Name
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(towerTypes[i].name, btnX + 30, btnY + 50);
+        ctx.fillText(`${towerTypes[i].cost}g`, btnX + 30, btnY + 58);
+
+        // Hotkey hint in top-left corner of each button.
+        ctx.textAlign = 'left';
+        ctx.font = 'bold 10px monospace';
+        ctx.fillStyle = isSelected ? '#FFD700' : '#C7D8EE';
+        ctx.fillText(`${i + 1}`, btnX + 4, btnY + 12);
+        ctx.textAlign = 'left';
+      }
     }
 
     // Upgrade/Sell buttons (if tower selected)
-    if (this.selectedTowerId) {
-      const upgradeBtnX = 340;
-      const sellBtnX = 430;
+    if (towerUiVisible && this.selectedTowerId) {
+      const { upgradeX: upgradeBtnX, sellX: sellBtnX } = this.getUpgradeButtonLayout();
       const info = this.onGetTowerInfo ? this.onGetTowerInfo() : null;
       const gold = this.getGold();
       const maxed = !!info && !info.canUpgrade;
@@ -409,15 +641,16 @@ export class UIManager {
       ctx.strokeRect(upgradeBtnX, height - 60, 80, 40);
       ctx.textAlign = 'center';
       ctx.fillStyle = affordable ? '#FFFFFF' : '#CFCFCF';
-      ctx.font = 'bold 11px monospace';
-      ctx.fillText('UPGRADE', upgradeBtnX + 40, height - 44);
+      ctx.font = 'bold 9px monospace';
+      const preview = maxed ? 'MAX LEVEL' : (info?.upgradePreview || 'UPGRADE');
+      ctx.fillText(preview, upgradeBtnX + 40, height - 46);
       ctx.font = 'bold 12px monospace';
       if (maxed) {
         ctx.fillStyle = '#FFD700';
-        ctx.fillText('MAX', upgradeBtnX + 40, height - 29);
+        ctx.fillText('MAX', upgradeBtnX + 40, height - 30);
       } else if (info) {
         ctx.fillStyle = affordable ? '#FFD700' : '#E06666';
-        ctx.fillText(`${info.upgradeCost}g`, upgradeBtnX + 40, height - 29);
+        ctx.fillText(`${info.upgradeCost}g`, upgradeBtnX + 40, height - 30);
       }
 
       // Sell button
@@ -438,35 +671,132 @@ export class UIManager {
 
     // Start/Pause button
     if (this.gameState === 'menu' || this.gameState === 'gameOver') {
+      const d = this.getDifficultyDropdownRect();
+      ctx.fillStyle = 'rgba(54, 64, 88, 0.95)';
+      ctx.fillRect(d.x, d.y, d.w, d.h);
+      ctx.strokeStyle = '#7EC8FF';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(d.x, d.y, d.w, d.h);
+
+      ctx.fillStyle = '#D6E9FF';
+      ctx.font = '11px monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText('DIFFICULTY', d.x + 8, d.y + 13);
+
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = 'bold 13px monospace';
+      ctx.fillText(this.formatDifficulty(this.selectedDifficulty), d.x + 8, d.y + 30);
+
+      ctx.fillStyle = '#7EC8FF';
+      ctx.font = 'bold 14px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(this.showDifficultyDropdown ? '▲' : '▼', d.x + d.w - 16, d.y + 27);
+
+      if (this.showDifficultyDropdown) {
+        const modes: DifficultyMode[] = ['easy', 'medium', 'hard'];
+        for (let i = 0; i < modes.length; i++) {
+          const opt = this.getDifficultyOptionRect(i);
+          const isSelected = this.selectedDifficulty === modes[i];
+          ctx.fillStyle = isSelected ? 'rgba(126, 200, 255, 0.25)' : 'rgba(32, 38, 56, 0.95)';
+          ctx.fillRect(opt.x, opt.y, opt.w, opt.h);
+          ctx.strokeStyle = '#5B7FA5';
+          ctx.lineWidth = 1;
+          ctx.strokeRect(opt.x, opt.y, opt.w, opt.h);
+
+          ctx.fillStyle = isSelected ? '#C6EEFF' : '#E6F0FF';
+          ctx.font = 'bold 12px monospace';
+          ctx.textAlign = 'left';
+          ctx.fillText(this.formatDifficulty(modes[i]), opt.x + 6, opt.y + 16);
+        }
+      }
+
       const btnX = width / 2 - 60;
       ctx.fillStyle = '#FFD700';
       ctx.fillRect(btnX, height - 60, 120, 40);
       ctx.fillStyle = '#1A1A2E';
       ctx.font = 'bold 14px monospace';
-      ctx.fillText(this.gameState === 'menu' ? 'START' : 'RESTART', btnX + 15, height - 35);
+      ctx.textAlign = 'center';
+      ctx.fillText(this.gameState === 'menu' ? 'START' : 'RESTART', btnX + 60, height - 35);
+
+      const help = this.getHelpButtonRect();
+      ctx.fillStyle = '#334562';
+      ctx.fillRect(help.x, help.y, help.w, help.h);
+      ctx.strokeStyle = '#7EC8FF';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(help.x, help.y, help.w, help.h);
+      ctx.fillStyle = '#E6F2FF';
+      ctx.font = 'bold 14px monospace';
+      ctx.fillText('?', help.x + help.w / 2, help.y + 26);
+      ctx.textAlign = 'left';
     } else {
-      const pauseBtnX = width - 60;
+      const help = this.getHelpButtonRect();
+      ctx.fillStyle = '#334562';
+      ctx.fillRect(help.x, help.y, help.w, help.h);
+      ctx.strokeStyle = '#7EC8FF';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(help.x, help.y, help.w, help.h);
+      ctx.fillStyle = '#E6F2FF';
+      ctx.font = 'bold 14px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('?', help.x + help.w / 2, help.y + 26);
+
+      const reset = this.getResetButtonRect();
+      ctx.fillStyle = '#7A2A2A';
+      ctx.fillRect(reset.x, reset.y, reset.w, reset.h);
+      ctx.strokeStyle = '#FF8866';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(reset.x, reset.y, reset.w, reset.h);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = 'bold 11px monospace';
+      ctx.fillText('RESET', reset.x + reset.w / 2, reset.y + 25);
+
+      const pause = this.getPauseButtonRect();
       ctx.fillStyle = '#6E6E6E';
-      ctx.fillRect(pauseBtnX, height - 60, 40, 40);
+      ctx.fillRect(pause.x, pause.y, pause.w, pause.h);
       ctx.fillStyle = '#FFFFFF';
       ctx.font = '16px monospace';
-      ctx.fillText('⏸', pauseBtnX + 8, height - 32);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('⏸', pause.x + pause.w / 2, pause.y + pause.h / 2);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
     }
 
     // Hover preview (range circle)
-    if (this.hoveredTile && this.selectedTowerType) {
+    if (towerUiVisible && this.hoveredTile && this.selectedTowerType) {
       const tileX = this.hoveredTile.col * 32;
       const tileY = this.hoveredTile.row * 32;
+      const range = this.getTowerRangePreview(this.selectedTowerType);
       
-      ctx.strokeStyle = 'rgba(255, 215, 0, 0.5)';
+      // Min-level range
+      ctx.strokeStyle = 'rgba(255, 215, 0, 0.7)';
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.arc(tileX + 16, tileY + 16, 80, 0, Math.PI * 2);
+      ctx.arc(tileX + 16, tileY + 16, range.min, 0, Math.PI * 2);
       ctx.stroke();
+
+      // Max-level projected range
+      ctx.strokeStyle = 'rgba(126, 200, 255, 0.65)';
+      ctx.setLineDash([7, 5]);
+      ctx.beginPath();
+      ctx.arc(tileX + 16, tileY + 16, range.max, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
 
       // Highlight tile
       ctx.fillStyle = 'rgba(255, 255, 255, 0.2)';
       ctx.fillRect(tileX, tileY, 32, 32);
+
+      // Compact legend near the tile
+      ctx.fillStyle = 'rgba(8, 14, 26, 0.82)';
+      ctx.fillRect(tileX + 20, tileY - 28, 96, 24);
+      ctx.strokeStyle = 'rgba(120, 170, 220, 0.5)';
+      ctx.strokeRect(tileX + 20, tileY - 28, 96, 24);
+      ctx.fillStyle = '#FFD700';
+      ctx.font = '10px monospace';
+      ctx.fillText(`L1 ${range.min}`, tileX + 25, tileY - 13);
+      ctx.fillStyle = '#7EC8FF';
+      ctx.fillText(`L5 ${range.max}`, tileX + 68, tileY - 13);
     }
   }
 
@@ -551,6 +881,145 @@ export class UIManager {
 
     this.drawSlider(ctx, 'Music', L.trackX, L.musicY, L.trackW, vols.music, '#7EC8FF');
     this.drawSlider(ctx, 'Sound FX', L.trackX, L.sfxY, L.trackW, vols.sfx, '#3DC83D');
+  }
+
+  /** Draws the gameplay help modal on top of HUD and world overlays. */
+  renderHelp(ctx: CanvasRenderingContext2D): void {
+    if (!this.showHelp) return;
+
+    const L = this.getHelpLayout();
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+    ctx.fillStyle = '#1C2234';
+    ctx.fillRect(L.x, L.y, L.w, L.h);
+    ctx.strokeStyle = '#7EC8FF';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(L.x, L.y, L.w, L.h);
+
+    const c = L.closeBtn;
+    ctx.fillStyle = '#CC2200';
+    ctx.fillRect(c.x, c.y, c.w, c.h);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.font = 'bold 18px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('X', c.x + c.w / 2, c.y + 21);
+
+    ctx.fillStyle = '#FFD700';
+    ctx.font = 'bold 26px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('TOWER HELP', L.x + 22, L.y + 44);
+
+    ctx.fillStyle = '#CFE3FF';
+    ctx.font = '14px monospace';
+    ctx.fillText('Default skills and upgrade impact:', L.x + 22, L.y + 70);
+
+    type HelpRow = { type: TowerType; name: string; base: string; upgrades: string };
+    const rows: HelpRow[] = [
+      {
+        type: 'archer',
+        name: 'Archer',
+        base: 'Balanced single-target DPS. Base stats: damage 10, range 120, fire rate 2.5.',
+        upgrades: 'Upgrades raise damage (+20%), range (+10%), and fire rate (+10%). Special at Lv3: Poison Tips.',
+      },
+      {
+        type: 'cannon',
+        name: 'Cannon',
+        base: 'Heavy burst with splash. Base stats: damage 30, range 100, fire rate 0.8, splash radius 40.',
+        upgrades: 'Core upgrades boost damage/range/fire rate. Special at Lv2: Incendiary Rounds (+30% splash radius).',
+      },
+      {
+        type: 'sniper',
+        name: 'Sniper',
+        base: 'Long-range precision burst. Base stats: damage 50, range 200, fire rate 0.5.',
+        upgrades: 'Core upgrades boost damage/range/fire rate. Special at Lv3: Piercing Rounds (+25% anti-armor damage).',
+      },
+      {
+        type: 'ice',
+        name: 'Ice',
+        base: 'Control tower that slows targets. Base stats: damage 5, range 90, fire rate 1.5, slow x0.5 for 2s.',
+        upgrades: 'Core upgrades boost damage/range/fire rate. Special at Lv2: Deep Freeze (+50% slow duration).',
+      },
+      {
+        type: 'flamethrower',
+        name: 'Flamethrower',
+        base: 'Unlocks at wave 25. Heavy close-mid burn tower. Base stats: damage 100, range 100, fire rate 1.2.',
+        upgrades: 'Core upgrades boost damage/range/fire rate. Designed for high burst lane control in short corridors.',
+      },
+    ];
+
+    let y = L.y + 108;
+    const iconX = L.x + 24;
+    const textX = L.x + 72;
+    const contentWidth = L.w - 96;
+    const frame = Math.floor(Date.now() / 250) % 2;
+    for (const row of rows) {
+      ctx.fillStyle = 'rgba(30, 45, 70, 0.45)';
+      ctx.fillRect(L.x + 18, y - 18, L.w - 36, 116);
+
+      SpaceSprites.drawTower(ctx, row.type, iconX, y - 6, 34, frame, false, Date.now() / 1000);
+
+      ctx.fillStyle = '#9ED8FF';
+      ctx.font = 'bold 15px monospace';
+      ctx.fillText(row.name, textX, y);
+
+      ctx.fillStyle = '#E6F2FF';
+      ctx.font = '12px monospace';
+      const baseNextY = this.drawWrappedText(ctx, `Base: ${row.base}`, textX, y + 20, contentWidth, 15);
+      const upgradesNextY = this.drawWrappedText(ctx, `Upgrades: ${row.upgrades}`, textX, baseNextY + 2, contentWidth, 15);
+
+      ctx.strokeStyle = 'rgba(126, 200, 255, 0.25)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      const dividerY = upgradesNextY + 4;
+      ctx.moveTo(L.x + 20, dividerY);
+      ctx.lineTo(L.x + L.w - 20, dividerY);
+      ctx.stroke();
+
+      y = dividerY + 14;
+    }
+
+    ctx.fillStyle = '#AFC7E8';
+    ctx.font = '12px monospace';
+    this.drawWrappedText(
+      ctx,
+      'Tip: The UPGRADE button previews the next applied stat change for your selected tower.',
+      L.x + 22,
+      L.y + L.h - 34,
+      L.w - 44,
+      14,
+    );
+  }
+
+  private drawWrappedText(
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    x: number,
+    y: number,
+    maxWidth: number,
+    lineHeight: number,
+  ): number {
+    const words = text.split(' ');
+    let line = '';
+    let currentY = y;
+
+    for (const word of words) {
+      const candidate = line ? `${line} ${word}` : word;
+      if (ctx.measureText(candidate).width <= maxWidth || !line) {
+        line = candidate;
+      } else {
+        ctx.fillText(line, x, currentY);
+        line = word;
+        currentY += lineHeight;
+      }
+    }
+
+    if (line) {
+      ctx.fillText(line, x, currentY);
+    }
+
+    return currentY + lineHeight;
   }
 
   private drawSlider(

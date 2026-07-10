@@ -1,5 +1,6 @@
 import { BaseEntity } from './BaseEntity';
 import { TowerType, TowerStats, Position } from '../types';
+import { SpaceSprites } from '../visuals/SpaceSprites';
 
 export interface TowerData extends TowerStats {
   type: TowerType;
@@ -13,6 +14,7 @@ const TOWER_STATS: Record<TowerType, TowerStats> = {
   cannon:   { damage: 30, range: 100, fireRate: 0.8, cost: 100, splashRadius: 40 },
   sniper:   { damage: 50, range: 200, fireRate: 0.5, cost: 150 },
   ice:      { damage: 5, range: 90, fireRate: 1.5, cost: 75, slowFactor: 0.5, slowDuration: 2 },
+  flamethrower: { damage: 100, range: 100, fireRate: 1.2, cost: 250 },
 };
 
 export class Tower extends BaseEntity {
@@ -47,16 +49,19 @@ export class Tower extends BaseEntity {
     }
   }
 
-  findTarget(enemies: { id: string; position: Position }[]): string | null {
+  findTarget(enemies: { id: string; position: Position; size?: { width: number; height: number } }[]): string | null {
     const center = { x: this.centerX, y: this.centerY };
     let closestDist = Infinity;
     let targetId: string | null = null;
 
     for (const enemy of enemies) {
       if (!enemy.id || !this.alive) continue;
+
+      const enemyCenterX = enemy.position.x + ((enemy.size?.width ?? 0) / 2);
+      const enemyCenterY = enemy.position.y + ((enemy.size?.height ?? 0) / 2);
       const dist = Math.sqrt(
-        Math.pow(enemy.position.x - center.x, 2) +
-        Math.pow(enemy.position.y - center.y, 2)
+        Math.pow(enemyCenterX - center.x, 2) +
+        Math.pow(enemyCenterY - center.y, 2)
       );
 
       if (dist <= this.data.range && dist < closestDist) {
@@ -88,20 +93,16 @@ export class Tower extends BaseEntity {
     const x = this.position.x;
     const y = this.position.y;
 
-    switch (this.data.type) {
-      case 'archer':
-        this.renderArcher(ctx, x, y);
-        break;
-      case 'cannon':
-        this.renderCannon(ctx, x, y);
-        break;
-      case 'sniper':
-        this.renderSniper(ctx, x, y);
-        break;
-      case 'ice':
-        this.renderIce(ctx, x, y);
-        break;
-    }
+    SpaceSprites.drawTower(
+      ctx,
+      this.data.type,
+      x,
+      y,
+      this.size.width,
+      this.animFrame,
+      Boolean(this.data.targetId),
+      Date.now() / 1000,
+    );
 
     // Level indicator
     ctx.fillStyle = '#FFD700';

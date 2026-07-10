@@ -32,7 +32,17 @@ export class CollisionSystem {
   ): boolean {
     const ra = Math.max(a.size.width, a.size.height) / 2;
     const rb = Math.max(b.size.width, b.size.height) / 2;
-    return this.pointInCircle(b.position, a.position, ra + rb);
+
+    const centerA = {
+      x: a.position.x + a.size.width / 2,
+      y: a.position.y + a.size.height / 2,
+    };
+    const centerB = {
+      x: b.position.x + b.size.width / 2,
+      y: b.position.y + b.size.height / 2,
+    };
+
+    return this.pointInCircle(centerB, centerA, ra + rb);
   }
 
   /** Get distance between two positions */

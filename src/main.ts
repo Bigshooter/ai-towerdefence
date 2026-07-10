@@ -7,11 +7,11 @@ import { Tower } from './entities/Tower';
 import { Projectile } from './entities/Projectile';
 import { WaveSystem } from './system/WaveSystem';
 import { EconomySystem } from './system/EconomySystem';
-import { UpgradeSystem } from './system/UpgradeSystem';
+import { UpgradeOption, UpgradeSystem } from './system/UpgradeSystem';
 import { HealthSystem } from './system/HealthSystem';
 import { UIManager } from './ui/UIManager';
 import { AudioManager } from './audio/AudioManager';
-import { GameState, EnemyType, TowerType } from './types';
+import { DifficultyMode, GameState, EnemyType, TowerType } from './types';
 
 interface GameData {
   lives: number;
@@ -50,6 +50,8 @@ class Game {
   private spawnTimer: number = 0;
   private currentSpawnInterval: number = 1;
   private interWaveTimer: number = 0;
+  private difficultyMode: DifficultyMode = 'easy';
+  private difficultyHpMultiplier: number = 1;
 
   constructor() {
     this.canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
@@ -79,7 +81,11 @@ class Game {
     this.gameLoop.start();
 
     // Set global state reference for enemy HP scaling
-    (window as any).gameState = { wave: 1 };
+    (window as any).gameState = {
+      wave: 1,
+      difficulty: this.difficultyMode,
+      difficultyHpMultiplier: this.difficultyHpMultiplier,
+    };
     (window as any).gameData = this.gameData;
   }
 
@@ -100,6 +106,10 @@ class Game {
       this.sellSelectedTower();
     };
 
+    this.uiManager.onResetGame = () => {
+      this.resetToMenu();
+    };
+
     this.uiManager.onGetTowerInfo = () => {
       const towerId = this.uiManager.getSelectedTowerId();
       if (!towerId) return null;
@@ -108,13 +118,15 @@ class Game {
 
       const options = this.upgradeSystem.getUpgradeOptions(tower);
       const canUpgrade = tower.data.level < 5 && options.length > 0;
-      const upgradeCost = canUpgrade ? options[0].cost : 0;
+      const nextOption = canUpgrade ? options[0] : null;
+      const upgradeCost = nextOption ? nextOption.cost : 0;
       const sellValue = this.upgradeSystem.sellTower(tower);
-      return { level: tower.data.level, upgradeCost, sellValue, canUpgrade };
+      const upgradePreview = nextOption ? this.getUpgradePreview(tower, nextOption) : 'MAX';
+      return { level: tower.data.level, upgradeCost, sellValue, canUpgrade, upgradePreview };
     };
 
-    this.uiManager.onStartGame = () => {
-      this.startNewGame();
+    this.uiManager.onStartGame = (difficulty) => {
+      this.startNewGame(difficulty);
     };
 
     this.uiManager.onPauseGame = () => {
@@ -139,7 +151,43 @@ class Game {
     };
   }
 
-  private startNewGame(): void {
+  private fmtStat(value: number): string {
+    return Number.isInteger(value) ? `${value}` : value.toFixed(1);
+  }
+
+  private getUpgradePreview(tower: Tower, option: UpgradeOption): string {
+    switch (option.type) {
+      case 'damage': {
+        const delta = tower.data.damage * 0.2;
+        return `DMG +${this.fmtStat(delta)}`;
+      }
+      case 'range': {
+        const delta = tower.data.range * 0.1;
+        return `RNG +${this.fmtStat(delta)}`;
+      }
+      case 'fireRate': {
+        const delta = tower.data.fireRate * 0.1;
+        return `SPD +${this.fmtStat(delta)}`;
+      }
+      case 'special':
+        if (tower.data.type === 'cannon') return 'SPLASH +30%';
+        if (tower.data.type === 'ice') return 'SLOW +50%';
+        if (tower.data.type === 'sniper') return 'ARMR +25%';
+        if (tower.data.type === 'archer') return 'POISON';
+        return option.name.toUpperCase();
+    }
+  }
+
+  private getDifficultyHpMultiplier(mode: DifficultyMode): number {
+    if (mode === 'medium') return 2;
+    if (mode === 'hard') return 3;
+    return 1;
+  }
+
+  private startNewGame(difficulty: DifficultyMode = 'easy'): void {
+    this.difficultyMode = difficulty;
+    this.difficultyHpMultiplier = this.getDifficultyHpMultiplier(difficulty);
+
     // Reset game state
     this.gameState = 'playing';
     this.uiManager.setGameState('playing');
@@ -160,6 +208,13 @@ class Game {
     this.spawningComplete = false;
     this.interWaveTimer = 1; // brief delay before the first wave
 
+    // Keep global state in sync for enemy regeneration max HP calculations.
+    (window as any).gameState = {
+      wave: this.gameData.wave,
+      difficulty: this.difficultyMode,
+      difficultyHpMultiplier: this.difficultyHpMultiplier,
+    };
+
     // Start BGM
     this.audioManager.startBGM();
   }
@@ -174,6 +229,36 @@ class Game {
       this.uiManager.setGameState('playing');
       this.audioManager.startBGM();
     }
+  }
+
+  private resetToMenu(): void {
+    this.gameState = 'menu';
+    this.uiManager.setGameState('menu');
+
+    this.gameData = { lives: 20, gold: 150, wave: 1, score: 0 };
+    this.enemies = [];
+    this.towers = [];
+    this.projectiles = [];
+    this.effects = [];
+    this.entityManager = new EntityManager();
+    this.waveSystem = new WaveSystem();
+    this.economySystem = new EconomySystem(150);
+    this.healthSystem = new HealthSystem(20, 20);
+
+    this.spawnQueue = [];
+    this.spawnTimer = 0;
+    this.spawningComplete = false;
+    this.interWaveTimer = 0;
+    this.waveCompleteTimer = 0;
+
+    this.audioManager.stopBGM();
+
+    (window as any).gameState = {
+      wave: this.gameData.wave,
+      difficulty: this.difficultyMode,
+      difficultyHpMultiplier: this.difficultyHpMultiplier,
+    };
+    (window as any).gameData = this.gameData;
   }
 
   private startNextWave(): void {
@@ -200,7 +285,8 @@ class Game {
     const waypoints = this.tileMap.getWaypoints();
     if (waypoints.length === 0) return;
 
-    const enemy = new Enemy(type, 0, waypoints, 1 + (this.gameData.wave - 1) * 0.15);
+    const waveHpMultiplier = 1 + (this.gameData.wave - 1) * 0.15;
+    const enemy = new Enemy(type, 0, waypoints, waveHpMultiplier * this.difficultyHpMultiplier);
     this.enemies.push(enemy);
     this.entityManager.add(enemy);
   }
@@ -209,6 +295,11 @@ class Game {
     if (!this.uiManager.getGameState() || this.uiManager.getGameState() === 'paused') return false;
 
     const towerType = type as TowerType;
+    if (towerType === 'flamethrower' && this.gameData.wave < 25) {
+      this.audioManager.playSFX('click');
+      return false;
+    }
+
     const x = col * 32 + 16;
     const y = row * 32 + 16;
 
@@ -226,7 +317,8 @@ class Game {
       archer: { damage: 10, range: 120, fireRate: 2.5, cost: 50 },
       cannon: { damage: 30, range: 100, fireRate: 0.8, cost: 100 },
       sniper: { damage: 50, range: 200, fireRate: 0.5, cost: 150 },
-      ice: { damage: 5, range: 90, fireRate: 1.5, cost: 75 }
+      ice: { damage: 5, range: 90, fireRate: 1.5, cost: 75 },
+      flamethrower: { damage: 100, range: 100, fireRate: 1.2, cost: 250 },
     };
 
     const stats = towerStats[towerType];
@@ -282,8 +374,21 @@ class Game {
       this.gameData.gold -= option.cost;
       option.apply(tower);
       tower.data.level++;
+      tower.data.range = this.getRangeForLevel(tower.data.type, tower.data.level);
       this.audioManager.playSFX('click');
     }
+  }
+
+  private getRangeForLevel(type: TowerType, level: number): number {
+    const baseRanges: Record<TowerType, number> = {
+      archer: 120,
+      cannon: 100,
+      sniper: 200,
+      ice: 90,
+      flamethrower: 100,
+    };
+    const clampedLevel = Math.max(1, level);
+    return baseRanges[type] * Math.pow(1.1, clampedLevel - 1);
   }
 
   private sellSelectedTower(): void {
@@ -441,13 +546,16 @@ class Game {
 
     // Update global state references
     (window as any).gameState.wave = this.gameData.wave;
+    (window as any).gameState.difficulty = this.difficultyMode;
+    (window as any).gameState.difficultyHpMultiplier = this.difficultyHpMultiplier;
     (window as any).gameData = this.gameData;
   }
 
   private fireProjectile(tower: Tower, target: Enemy): void {
     const projectileType = tower.data.type === 'archer' ? 'arrow' : 
                           tower.data.type === 'cannon' ? 'cannonball' :
-                          tower.data.type === 'sniper' ? 'laser' : 'ice';
+                          tower.data.type === 'sniper' ? 'laser' :
+                          tower.data.type === 'flamethrower' ? 'flame' : 'ice';
 
     const projectile = new Projectile(
       projectileType,
@@ -611,6 +719,7 @@ class Game {
     }
 
     // Settings panel renders on top of everything else
+    this.uiManager.renderHelp(this.ctx);
     this.uiManager.renderSettings(this.ctx);
   }
 }

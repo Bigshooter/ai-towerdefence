@@ -1,4 +1,5 @@
 import { Position } from '../types';
+import { SpaceSprites } from '../visuals/SpaceSprites';
 
 export type TileType = 'grass' | 'path' | 'wall' | 'water' | 'tree' | 'road_edge';
 
@@ -133,6 +134,8 @@ export class TileMap {
 
   /** Render the tile map to a canvas context */
   render(ctx: CanvasRenderingContext2D): void {
+    SpaceSprites.drawBackdrop(ctx, this.getPixelWidth(), this.getPixelHeight(), Date.now() / 1000);
+
     for (let y = 0; y < this.height; y++) {
       for (let x = 0; x < this.width; x++) {
         const tile = this.getTile(x, y);
@@ -245,81 +248,22 @@ export class TileMap {
     const px = col * this.tileSize;
     const py = row * this.tileSize;
 
-    switch (type) {
-      case 'grass':
-        ctx.fillStyle = '#0F6F0F';
-        ctx.fillRect(px, py, this.tileSize, this.tileSize);
-        // Add texture variation
-        ctx.fillStyle = '#1FA81F';
-        if ((col + row) % 3 === 0) {
-          ctx.fillRect(px + 4, py + 4, 6, 6);
-        }
-        if ((col * 7 + row * 13) % 5 === 0) {
-          ctx.fillStyle = '#3DC83D';
-          ctx.fillRect(px + 20, py + 18, 4, 4);
-        }
-        break;
+    const variant = (col * 17 + row * 31) % 4;
+    const connectionMask = this.getPathConnectionMask(col, row, type);
+    SpaceSprites.drawTile(ctx, type, px, py, this.tileSize, variant, connectionMask);
+  }
 
-      case 'path':
-        ctx.fillStyle = '#A0724A';
-        ctx.fillRect(px, py, this.tileSize, this.tileSize);
-        // Wear patches
-        ctx.fillStyle = '#8B5E2A';
-        if ((col * 3 + row) % 4 === 0) {
-          ctx.fillRect(px + 8, py + 12, 8, 6);
-        }
-        break;
-
-      case 'wall':
-        ctx.fillStyle = '#6E6E6E';
-        ctx.fillRect(px, py, this.tileSize, this.tileSize);
-        // Mortar lines
-        ctx.fillStyle = '#3A3A3A';
-        ctx.fillRect(px, py + 15, this.tileSize, 2);
-        ctx.fillRect(px + 15, py, 2, this.tileSize);
-        // Moss at bottom
-        ctx.fillStyle = '#1FA81F';
-        ctx.fillRect(px + 4, py + 26, 8, 4);
-        break;
-
-      case 'water':
-        ctx.fillStyle = '#2E5CA8';
-        ctx.fillRect(px, py, this.tileSize, this.tileSize);
-        // Wave highlights
-        ctx.fillStyle = '#4A8FE8';
-        for (let i = 0; i < 3; i++) {
-          const wx = px + ((col * 5 + i * 11) % 28);
-          ctx.fillRect(wx, py + 8 + i * 8, 6, 2);
-        }
-        break;
-
-      case 'tree':
-        // Trunk
-        ctx.fillStyle = '#8B5E2A';
-        ctx.fillRect(px + 13, py + 16, 6, 14);
-        // Canopy
-        ctx.fillStyle = '#1FA81F';
-        ctx.beginPath();
-        ctx.arc(px + 16, py + 10, 12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#3DC83D';
-        ctx.beginPath();
-        ctx.arc(px + 12, py + 7, 6, 0, Math.PI * 2);
-        ctx.fill();
-        break;
-
-      case 'road_edge':
-        // Gradient from grass to path
-        ctx.fillStyle = '#A0724A';
-        ctx.fillRect(px, py, this.tileSize, this.tileSize);
-        ctx.fillStyle = '#0F6F0F';
-        if (col % 2 === 0) {
-          ctx.fillRect(px, py, 8, this.tileSize);
-        } else {
-          ctx.fillRect(px + 24, py, 8, this.tileSize);
-        }
-        break;
+  private getPathConnectionMask(col: number, row: number, type: TileType): number {
+    if (type !== 'path' && type !== 'road_edge') {
+      return 0;
     }
+
+    let mask = 0;
+    if (this.isWalkable(col, row - 1)) mask |= 1; // up
+    if (this.isWalkable(col + 1, row)) mask |= 2; // right
+    if (this.isWalkable(col, row + 1)) mask |= 4; // down
+    if (this.isWalkable(col - 1, row)) mask |= 8; // left
+    return mask;
   }
 
   /** Get all path tiles as a set of coordinates for rendering */

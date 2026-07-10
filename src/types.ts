@@ -18,7 +18,7 @@ export interface Entity {
 }
 
 // Tower types
-export type TowerType = 'archer' | 'cannon' | 'sniper' | 'ice';
+export type TowerType = 'archer' | 'cannon' | 'sniper' | 'ice' | 'flamethrower';
 
 export interface TowerStats {
   damage: number;
@@ -42,7 +42,7 @@ export interface EnemyStats {
 }
 
 // Projectile types
-export type ProjectileType = 'arrow' | 'cannonball' | 'laser' | 'ice';
+export type ProjectileType = 'arrow' | 'cannonball' | 'laser' | 'ice' | 'flame';
 
 export interface ProjectileStats {
   damage: number;
@@ -62,6 +62,8 @@ export interface WaveConfig {
 
 // Game state
 export type GameState = 'menu' | 'playing' | 'paused' | 'waveComplete' | 'gameOver';
+
+export type DifficultyMode = 'easy' | 'medium' | 'hard';
 
 export interface GameData {
   lives: number;
