@@ -1,10 +1,11 @@
-import { DifficultyMode, GameData, GameState, HighScoreEntry, MapType, TowerType } from '../types';
+import { DifficultyMode, GameData, GameSpeed, GameState, HighScoreEntry, MapType, TowerType } from '../types';
 import { SpaceSprites } from '../visuals/SpaceSprites';
 
 export class UIManager {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private gameState: GameState = 'menu';
+  private gameSpeed: GameSpeed = 1;
   private selectedTowerType: string | null = null;
   private hoveredTile: { col: number; row: number } | null = null;
   private selectedTowerId: string | null = null;
@@ -192,6 +193,16 @@ export class UIManager {
           this.selectedTowerType = null;
           this.selectedTowerId = null;
           break;
+        case ' ':
+        case '`':
+        case '~':
+        case 's':
+        case 'S':
+          if (towerUiVisible) {
+            this.cycleGameSpeed();
+            e.preventDefault();
+          }
+          break;
         default:
           if (!towerUiVisible) break;
           if (!/^[1-9]$/.test(e.key)) break;
@@ -269,6 +280,12 @@ export class UIManager {
         this.triggerStart();
       }
     } else if (this.gameState === 'playing' || this.gameState === 'paused') {
+      const speed = this.getSpeedButtonRect();
+      if (x >= speed.x && x <= speed.x + speed.w && y >= speed.y && y <= speed.y + speed.h) {
+        this.cycleGameSpeed();
+        return;
+      }
+
       const reset = this.getResetButtonRect();
       if (x >= reset.x && x <= reset.x + reset.w && y >= reset.y && y <= reset.y + reset.h) {
         this.triggerReset();
@@ -446,6 +463,24 @@ export class UIManager {
     this.showLeaderboardModal = true;
   }
 
+  // Game speed controls
+  getGameSpeed(): GameSpeed {
+    return this.gameSpeed;
+  }
+
+  setGameSpeed(speed: GameSpeed): void {
+    this.gameSpeed = speed;
+    this.onSetGameSpeed?.(speed);
+  }
+
+  cycleGameSpeed(): GameSpeed {
+    const speeds: GameSpeed[] = [1, 2, 3, 5];
+    const nextIdx = (speeds.indexOf(this.gameSpeed) + 1) % speeds.length;
+    this.gameSpeed = speeds[nextIdx];
+    this.onSetGameSpeed?.(this.gameSpeed);
+    return this.gameSpeed;
+  }
+
   // Callbacks for game logic
   onPlaceTower?: (type: string, col: number, row: number) => boolean;
   onSelectTower?: (col: number, row: number) => void;
@@ -455,6 +490,7 @@ export class UIManager {
   onStartGame?: (difficulty: DifficultyMode, mapType: MapType) => void;
   onSelectMap?: (mapType: MapType) => void;
   onPauseGame?: () => void;
+  onSetGameSpeed?: (speed: GameSpeed) => void;
   onGetTowerInfo?: () => {
     level: number;
     upgradeCost: number;
@@ -508,6 +544,11 @@ export class UIManager {
   private getResetButtonRect(): { x: number; y: number; w: number; h: number } {
     const pause = this.getPauseButtonRect();
     return { x: pause.x - 90, y: pause.y, w: 80, h: 40 };
+  }
+
+  private getSpeedButtonRect(): { x: number; y: number; w: number; h: number } {
+    const reset = this.getResetButtonRect();
+    return { x: reset.x - 90, y: reset.y, w: 80, h: 40 };
   }
 
   private getHelpLayout() {
@@ -1203,6 +1244,23 @@ export class UIManager {
       ctx.fillStyle = '#FFFFFF';
       ctx.font = 'bold 11px monospace';
       ctx.fillText('RESET', reset.x + reset.w / 2, reset.y + 25);
+
+      const speedBtn = this.getSpeedButtonRect();
+      const speedColors: Record<GameSpeed, { bg: string; border: string; text: string }> = {
+        1: { bg: 'rgba(30, 50, 75, 0.95)', border: '#7EC8FF', text: '#7EC8FF' },
+        2: { bg: 'rgba(25, 60, 40, 0.95)', border: '#56D364', text: '#56D364' },
+        3: { bg: 'rgba(65, 55, 20, 0.95)', border: '#FFD700', text: '#FFD700' },
+        5: { bg: 'rgba(70, 20, 70, 0.95)', border: '#FF55FF', text: '#FF55FF' },
+      };
+      const speedStyle = speedColors[this.gameSpeed] || speedColors[1];
+      ctx.fillStyle = speedStyle.bg;
+      ctx.fillRect(speedBtn.x, speedBtn.y, speedBtn.w, speedBtn.h);
+      ctx.strokeStyle = speedStyle.border;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(speedBtn.x, speedBtn.y, speedBtn.w, speedBtn.h);
+      ctx.fillStyle = speedStyle.text;
+      ctx.font = 'bold 14px monospace';
+      ctx.fillText(`${this.gameSpeed}X`, speedBtn.x + speedBtn.w / 2, speedBtn.y + 25);
 
       const pause = this.getPauseButtonRect();
       ctx.fillStyle = '#6E6E6E';

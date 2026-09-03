@@ -91,5 +91,9 @@ export interface HighScoreEntry {
   timestamp: number; // Unix epoch ms
 }
 
+export type GameSpeed = 1 | 2 | 3 | 5;
+
+export const AVAILABLE_GAME_SPEEDS: readonly GameSpeed[] = [1, 2, 3, 5] as const;
+
 export type Leaderboards = Record<MapType, HighScoreEntry[]>;
 

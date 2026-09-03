@@ -352,7 +352,8 @@ ai-towerdefence/
 │   │   ├── dynamic-synthwave-bgm.md
 │   │   ├── persisted-map-high-scores.md
 │   │   ├── selectable-map-types.md
-│   │   └── tower-upgrade-visuals.md
+│   │   ├── tower-upgrade-visuals.md
+│   │   └── variable-game-speed-controls.md
 │   └── tasks/                              # Task breakdown and implementation tracking
 ├── src/
 │   ├── main.ts                             # Main Game orchestrator and state coordinator

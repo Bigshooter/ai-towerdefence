@@ -39,6 +39,20 @@ export class TowerDefencePage {
     await this.clickCanvasAt(1080, 920);
   }
 
+  async clickSpeedButton() {
+    await this.clickCanvasAt(990, 920);
+  }
+
+  async getGameSpeed(): Promise<number> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getGameSpeed?.() || (window as any).game?.getGameSpeed?.() || 1);
+  }
+
+  async setGameSpeed(speed: 1 | 2 | 3 | 5): Promise<void> {
+    await this.page.evaluate((s) => {
+      (window as any).uiManager?.setGameSpeed?.(s);
+    }, speed);
+  }
+
   async clickHelpButton() {
     await this.clickCanvasAt(1240, 920);
   }

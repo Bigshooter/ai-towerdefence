@@ -12,7 +12,7 @@ import { HighScoreSystem } from './system/HighScoreSystem';
 import { UIManager } from './ui/UIManager';
 import { AudioManager } from './audio/AudioManager';
 import { SpaceSprites } from './visuals/SpaceSprites';
-import { DifficultyMode, GameState, EnemyType, MapType, TowerType, Position, WaveConfig } from './types';
+import { DifficultyMode, GameData as IGameData, GameSpeed, GameState, EnemyType, MapType, TowerType, Position, WaveConfig } from './types';
 
 interface GameData {
   lives: number;
@@ -36,6 +36,7 @@ class Game {
 
   // Game state
   private gameState: GameState = 'menu';
+  private gameSpeed: GameSpeed = 1;
   private gameData: GameData = { lives: 20, gold: 150, wave: 1, score: 0 };
   private enemies: Enemy[] = [];
   private towers: Tower[] = [];
@@ -135,6 +136,10 @@ class Game {
 
     this.uiManager.onPauseGame = () => {
       this.togglePause();
+    };
+
+    this.uiManager.onSetGameSpeed = (speed) => {
+      this.gameSpeed = speed;
     };
 
     this.uiManager.onSetMusicVolume = (v) => {
@@ -381,9 +386,37 @@ class Game {
     this.audioManager.playSFX('click');
   }
 
+  public setGameSpeed(speed: GameSpeed): void {
+    this.gameSpeed = speed;
+    this.uiManager.setGameSpeed(speed);
+  }
+
+  public getGameSpeed(): GameSpeed {
+    return this.gameSpeed;
+  }
+
   private update(dt: number): void {
     if (this.gameState !== 'playing') return;
 
+    const totalDt = dt * this.gameSpeed;
+    const maxSubStep = 0.033;
+    let remainingDt = totalDt;
+
+    while (remainingDt > 0) {
+      const stepDt = Math.min(remainingDt, maxSubStep);
+      this.updateSimulation(stepDt);
+      remainingDt -= stepDt;
+      if (this.gameState !== 'playing') break;
+    }
+
+    if (this.bannerTimer > 0) {
+      this.bannerTimer = Math.max(0, this.bannerTimer - dt * this.gameSpeed);
+    }
+
+    this.syncGold();
+  }
+
+  private updateSimulation(dt: number): void {
     // Periodic passive income accrues inside the economy system
     this.economySystem.update(dt);
 
@@ -487,12 +520,6 @@ class Game {
     if (waveEvents.waveComplete) {
       this.handleWaveComplete();
     }
-
-    if (this.bannerTimer > 0) {
-      this.bannerTimer = Math.max(0, this.bannerTimer - dt);
-    }
-
-    this.syncGold();
   }
 
   private fireProjectile(tower: Tower, target: Enemy): void {
