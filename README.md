@@ -50,6 +50,34 @@ After building, run:
 npm run preview
 ```
 
+## Automated UI Testing
+
+The project uses [Playwright](https://playwright.dev/) for automated end-to-end UI testing across menus, canvas interactions, audio controls, difficulty settings, and gameplay loops.
+
+Run tests in headless mode:
+
+```powershell
+npm run test:ui
+```
+
+Run tests with headed browser:
+
+```powershell
+npm run test:ui:headed
+```
+
+Run tests in interactive Playwright UI mode:
+
+```powershell
+npm run test:ui:ui
+```
+
+View HTML test report:
+
+```powershell
+npm run test:ui:report
+```
+
 This serves the built app locally so you can verify production output.
 
 ## Scripts

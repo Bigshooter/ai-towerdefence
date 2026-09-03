@@ -1,5 +1,5 @@
 import { BaseEntity } from './BaseEntity';
-import { Position, ProjectileType } from '../types';
+import { PlayerRole, Position, ProjectileType, TowerType } from '../types';
 import { CollisionSystem } from '../engine/CollisionSystem';
 import { SpaceSprites } from '../visuals/SpaceSprites';
 
@@ -10,17 +10,29 @@ export interface ProjectileData {
   splashRadius?: number;
   slowFactor?: number;
   slowDuration?: number;
+  level?: number;
+  ownerRole?: PlayerRole;
+  towerType?: TowerType;
+}
+
+export interface ProjectileOptions {
+  splashRadius?: number;
+  slowFactor?: number;
+  slowDuration?: number;
+  level?: number;
+  ownerRole?: PlayerRole;
+  towerType?: TowerType;
+  customId?: string;
 }
 
 export class Projectile extends BaseEntity {
   data: ProjectileData;
-  targetId: string | null;
   direction: Position;
   private trailTimer: number = 0;
 
-  constructor(type: ProjectileType, x: number, y: number, targetX: number, targetY: number, damage: number) {
+  constructor(type: ProjectileType, x: number, y: number, targetX: number, targetY: number, damage: number, options?: ProjectileOptions) {
     // Store projectile position as top-left while x/y inputs are center points.
-    super(`proj_${type}_${Math.random().toString(36).substr(2, 9)}`, x - 8, y - 8, 16, 16);
+    super(options?.customId || `proj_${type}_${Math.random().toString(36).substr(2, 9)}`, x - 8, y - 8, 16, 16);
 
     const dx = targetX - x;
     const dy = targetY - y;
@@ -30,13 +42,15 @@ export class Projectile extends BaseEntity {
       type,
       damage,
       speed: type === 'laser' ? 800 : type === 'ice' ? 200 : type === 'cannonball' ? 150 : type === 'flame' ? 260 : 300,
-      splashRadius: type === 'cannonball' ? 40 : undefined,
-      slowFactor: type === 'ice' ? 0.5 : undefined,
-      slowDuration: type === 'ice' ? 2 : undefined,
+      splashRadius: options?.splashRadius ?? (type === 'cannonball' ? 40 : undefined),
+      slowFactor: options?.slowFactor ?? (type === 'ice' ? 0.5 : undefined),
+      slowDuration: options?.slowDuration ?? (type === 'ice' ? 2 : undefined),
+      level: options?.level ?? 1,
+      ownerRole: options?.ownerRole,
+      towerType: options?.towerType,
     };
 
     this.direction = { x: dx / dist, y: dy / dist };
-    this.targetId = null; // Will be resolved on update
   }
 
   update(dt: number): void {
@@ -71,6 +85,7 @@ export class Projectile extends BaseEntity {
       this.direction.x,
       this.direction.y,
       Date.now() / 1000,
+      this.data.level ?? 1,
     );
   }
 

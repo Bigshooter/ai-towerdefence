@@ -23,8 +23,9 @@
 
     #game-container {
       position: relative;
-      width: 1280px;
-      height: 960px;
+      width: min(1280px, 100vw, calc(100vh * 4 / 3));
+      aspect-ratio: 4 / 3;
+      flex: 0 0 auto;
       image-rendering: pixelated;
       image-rendering: crisp-edges;
     }
@@ -50,7 +51,7 @@
       pointer-events: auto;
     }
   </style>
-  <script type="module" crossorigin src="/assets/index-YaTYYISF.js"></script>
+  <script type="module" crossorigin src="/assets/index-Bi7KO27Y.js"></script>
 </head>
 <body>
   <div id="game-container">

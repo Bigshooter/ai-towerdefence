@@ -27,16 +27,13 @@ export class GameLoop {
   private tick(currentTime: number) {
     if (!this.running) return;
 
-    const dt = (currentTime - this.lastTime) / 1000; // delta time in seconds
+    // Clamp dt so backgrounded tabs don't produce huge jumps on resume
+    const dt = Math.min((currentTime - this.lastTime) / 1000, 0.1);
     this.lastTime = currentTime;
 
     this.updateCallback(dt);
     this.renderCallback();
 
     requestAnimationFrame(this.tick.bind(this));
-  }
-
-  get deltaTime(): number {
-    return (performance.now() - this.lastTime) / 1000;
   }
 }

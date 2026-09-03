@@ -5,10 +5,14 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:ui": "playwright test",
+    "test:ui:headed": "playwright test --headed",
+    "test:ui:ui": "playwright test --ui",
+    "test:ui:report": "playwright show-report"
   },
-  "dependencies": {},
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/node": "^20.11.0",
     "typescript": "^5.3.3",
     "vite": "^5.0.12"
