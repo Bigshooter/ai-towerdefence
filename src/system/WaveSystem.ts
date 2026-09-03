@@ -14,6 +14,18 @@ export class WaveSystem {
   private interWaveTimer: number = 0;
   private spawningComplete: boolean = false;
 
+  private prngState: number = 12345;
+
+  public setSeed(seed: number): void {
+    this.prngState = seed >>> 0;
+  }
+
+  private nextRandom(): number {
+    // Linear Congruential Generator (deterministic across clients)
+    this.prngState = (this.prngState * 1664525 + 1013904223) >>> 0;
+    return (this.prngState >>> 0) / 4294967296;
+  }
+
   generateWave(waveNumber: number): WaveConfig {
     const enemies: EnemyType[] = [];
     
@@ -25,14 +37,14 @@ export class WaveSystem {
       if (waveNumber <= 3) {
         enemies.push('normal');
       } else if (waveNumber <= 6) {
-        enemies.push(Math.random() > 0.5 ? 'normal' : 'speed');
+        enemies.push(this.nextRandom() > 0.5 ? 'normal' : 'speed');
       } else if (waveNumber <= 10) {
-        const rand = Math.random();
+        const rand = this.nextRandom();
         if (rand < 0.4) enemies.push('normal');
         else if (rand < 0.7) enemies.push('speed');
         else enemies.push('armored');
       } else {
-        const rand = Math.random();
+        const rand = this.nextRandom();
         if (rand < 0.3) enemies.push('normal');
         else if (rand < 0.5) enemies.push('speed');
         else if (rand < 0.75) enemies.push('armored');
@@ -55,10 +67,17 @@ export class WaveSystem {
   }
 
   /** Queue a wave to start after a delay; timing advances via update(dt). */
-  scheduleWave(waveNumber: number, delaySeconds: number): void {
+  scheduleWave(waveNumber: number, delaySeconds: number, customConfig?: WaveConfig): void {
     this.pendingWave = waveNumber;
     this.interWaveTimer = delaySeconds;
+    if (customConfig) {
+      this.pendingConfig = customConfig;
+    } else {
+      this.pendingConfig = null;
+    }
   }
+
+  private pendingConfig: WaveConfig | null = null;
 
   update(dt: number, aliveEnemies: number): WaveEvents {
     const events: WaveEvents = {};
@@ -67,7 +86,7 @@ export class WaveSystem {
       this.interWaveTimer -= dt;
       if (this.interWaveTimer <= 0) {
         this.interWaveTimer = 0;
-        events.waveStarted = this.startWave(this.pendingWave);
+        events.waveStarted = this.startWave(this.pendingWave, this.pendingConfig);
       }
     }
 
@@ -91,8 +110,8 @@ export class WaveSystem {
     return events;
   }
 
-  private startWave(waveNumber: number): WaveConfig {
-    const config = this.generateWave(waveNumber);
+  private startWave(waveNumber: number, customConfig: WaveConfig | null = null): WaveConfig {
+    const config = customConfig ?? this.generateWave(waveNumber);
     this.spawnQueue = [...config.enemies];
     this.spawnInterval = config.spawnInterval;
     this.spawnTimer = 0;

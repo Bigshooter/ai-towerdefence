@@ -28,13 +28,14 @@ export class Enemy extends BaseEntity {
   private animTimer: number = 0;
   private hpMultiplier: number;
 
-  constructor(type: EnemyType, waypointIndex: number, waypoints: Position[], hpMultiplier: number) {
+  constructor(type: EnemyType, waypointIndex: number, waypoints: Position[], hpMultiplier: number, customId?: string) {
     const stats = ENEMY_STATS[type];
     const size = type === 'boss' ? 32 : 24;
     const startX = waypoints[0]?.x ?? 16;
     const startY = waypoints[0]?.y ?? 96;
 
-    super(`enemy_${type}_${Math.random().toString(36).substr(2, 9)}`, startX, startY, size, size);
+    const id = customId || `enemy_${type}_${Math.random().toString(36).substr(2, 9)}`;
+    super(id, startX, startY, size, size);
 
     this.hpMultiplier = hpMultiplier;
     this.data = {

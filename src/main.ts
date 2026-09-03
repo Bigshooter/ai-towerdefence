@@ -9,10 +9,12 @@ import { EconomySystem } from './system/EconomySystem';
 import { UpgradeOption, UpgradeSystem } from './system/UpgradeSystem';
 import { HealthSystem } from './system/HealthSystem';
 import { HighScoreSystem } from './system/HighScoreSystem';
+import { DamageCalculator } from './system/DamageCalculator';
 import { UIManager } from './ui/UIManager';
 import { AudioManager } from './audio/AudioManager';
 import { SpaceSprites } from './visuals/SpaceSprites';
-import { DifficultyMode, GameData as IGameData, GameSpeed, GameState, EnemyType, MapType, TowerType, Position, WaveConfig } from './types';
+import { MultiplayerNetwork } from './network/MultiplayerNetwork';
+import { DifficultyMode, EnemySnapshot, GameData as IGameData, GameMode, GameSpeed, GameState, EnemyType, HostStateSnapshot, MapType, MultiplayerRoom, NetworkMessage, PlayerRole, Position, ProjectileSnapshot, TowerSnapshot, TowerType, WaveConfig } from './types';
 
 interface GameData {
   lives: number;
@@ -31,17 +33,29 @@ class Game {
   private upgradeSystem = new UpgradeSystem();
   private healthSystem = new HealthSystem(20, 20);
   private highScoreSystem = new HighScoreSystem();
+  private damageCalculator = new DamageCalculator();
   private uiManager!: UIManager;
   private audioManager = new AudioManager();
+  private network = new MultiplayerNetwork();
 
   // Game state
   private gameState: GameState = 'menu';
+  private gameMode: GameMode = 'solo';
   private gameSpeed: GameSpeed = 1;
   private gameData: GameData = { lives: 20, gold: 150, wave: 1, score: 0 };
   private enemies: Enemy[] = [];
   private towers: Tower[] = [];
   private projectiles: Projectile[] = [];
   private effects: Effect[] = [];
+
+  // Multiplayer tracking
+  private isHost: boolean = true;
+  private localRole: PlayerRole = 'p1';
+  private p1Tag: string = 'HOST';
+  private p2Tag: string = 'GUEST';
+  private currentRoomId: string | null = null;
+  private countdownTimer: number | null = null;
+  private rngSeed: number = 12345;
 
   // Wave tracking
   private waypoints: Position[] = [];
@@ -72,6 +86,7 @@ class Game {
     // Initialize UI manager
     this.uiManager = new UIManager(this.canvas);
     this.setupUICallbacks();
+    this.setupNetworkCallbacks();
 
     // Start game loop
     this.gameLoop = new GameLoop(
@@ -86,7 +101,204 @@ class Game {
     (window as any).gameData = this.gameData;
     (window as any).uiManager = this.uiManager;
     (window as any).highScoreSystem = this.highScoreSystem;
+    (window as any).damageCalculator = this.damageCalculator;
+    (window as any).network = this.network;
     (window as any).SpaceSprites = SpaceSprites;
+  }
+
+  private setupNetworkCallbacks(): void {
+    this.network.subscribe((msg: NetworkMessage) => {
+      this.handleNetworkMessage(msg);
+    });
+  }
+
+  private handleNetworkMessage(msg: NetworkMessage): void {
+    switch (msg.type) {
+      case 'ANNOUNCE_ROOM': {
+        const rooms = this.uiManager.getOpenRooms();
+        const existingIdx = rooms.findIndex((r) => r.id === msg.room.id);
+        if (existingIdx >= 0) {
+          rooms[existingIdx] = msg.room;
+        } else {
+          rooms.push(msg.room);
+        }
+        this.uiManager.setOpenRooms(rooms);
+        break;
+      }
+      case 'JOIN_ACCEPTED': {
+        if (this.localRole === 'p2') {
+          this.currentRoomId = msg.room.id;
+          this.uiManager.setMultiplayerRoom(msg.room);
+          this.uiManager.setLocalPlayerRole('p2');
+          this.uiManager.setP1Tag(msg.room.hostTag);
+          this.uiManager.setP2Tag(msg.room.guestTag || this.uiManager.getGamertag());
+          this.uiManager.setActiveMenuScreen('multiplayer_waiting_room');
+          this.audioManager.playSFX('click');
+        } else if (this.localRole === 'p1') {
+          this.uiManager.setMultiplayerRoom(msg.room);
+          this.uiManager.setP2Tag(msg.room.guestTag || 'GUEST');
+          this.audioManager.playSFX('click');
+        }
+        break;
+      }
+      case 'LEAVE_ROOM': {
+        if (msg.role === 'p2' && this.localRole === 'p1') {
+          const room = this.uiManager.getMultiplayerRoom();
+          if (room) {
+            room.guestTag = undefined;
+            room.guestReady = false;
+            room.status = 'waiting';
+            this.uiManager.setMultiplayerRoom(room);
+          }
+          this.countdownTimer = null;
+          this.uiManager.setMatchCountdown(null);
+        } else if (msg.role === 'p1' && this.localRole === 'p2') {
+          this.currentRoomId = null;
+          this.uiManager.setMultiplayerRoom(null);
+          this.uiManager.setActiveMenuScreen('multiplayer_hub');
+        }
+        break;
+      }
+      case 'TOGGLE_READY': {
+        const room = this.uiManager.getMultiplayerRoom();
+        if (room && room.id === msg.roomId) {
+          if (msg.role === 'p1') {
+            room.hostReady = msg.ready;
+          } else {
+            room.guestReady = msg.ready;
+          }
+          this.uiManager.setMultiplayerRoom(room);
+
+          // If both are ready and I am host, start countdown
+          if (this.isHost && room.hostReady && room.guestReady && this.countdownTimer === null) {
+            this.startLaunchCountdown();
+          }
+        }
+        break;
+      }
+      case 'START_MATCH': {
+        this.startNewCoopGame(
+          msg.mapType,
+          msg.difficulty,
+          msg.p1Tag,
+          msg.p2Tag,
+          this.localRole === 'p1',
+          msg.seed
+        );
+        break;
+      }
+      case 'PLACE_TOWER': {
+        if (msg.role !== this.localRole) {
+          this.handleRemotePlaceTower(msg.towerType, msg.col, msg.row, msg.role, msg.towerId);
+        }
+        break;
+      }
+      case 'UPGRADE_TOWER': {
+        if (msg.role !== this.localRole) {
+          this.handleRemoteUpgradeTower(msg.towerId, msg.role);
+        }
+        break;
+      }
+      case 'SELL_TOWER': {
+        if (msg.role !== this.localRole) {
+          this.handleRemoteSellTower(msg.towerId, msg.role);
+        }
+        break;
+      }
+      case 'START_WAVE': {
+        if (msg.role !== this.localRole) {
+          this.gameData.wave = msg.waveNumber;
+          this.bannerWave = msg.waveNumber - 1;
+          this.bannerTimer = 2;
+          this.damageCalculator.resetWaveDamage();
+          this.waveSystem.scheduleWave(msg.waveNumber, this.wavePauseDuration, msg.config);
+        }
+        break;
+      }
+      case 'SET_GAME_SPEED': {
+        if (msg.role !== this.localRole) {
+          this.gameSpeed = msg.speed;
+          this.uiManager.setGameSpeed(msg.speed);
+        }
+        break;
+      }
+      case 'PAUSE_GAME': {
+        if (msg.role !== this.localRole) {
+          if (msg.paused && this.gameState === 'playing') {
+            this.togglePause();
+          } else if (!msg.paused && this.gameState === 'paused') {
+            this.togglePause();
+          }
+        }
+        break;
+      }
+      case 'CURSOR_MOVE': {
+        if (msg.role !== this.localRole) {
+          const tag = msg.role === 'p1' ? this.p1Tag : this.p2Tag;
+          this.uiManager.setRemoteCursor({
+            col: msg.col,
+            row: msg.row,
+            canvasX: msg.canvasX,
+            canvasY: msg.canvasY,
+            tag,
+            visible: true,
+          });
+        }
+        break;
+      }
+      case 'PING_TILE': {
+        if (msg.role !== this.localRole) {
+          this.uiManager.addPing(msg.col, msg.row, msg.role);
+          this.audioManager.playSFX('click');
+        }
+        break;
+      }
+      case 'HOST_SNAPSHOT': {
+        if (!this.isHost && this.localRole === 'p2' && this.gameState === 'playing') {
+          this.handleHostSnapshot(msg.snapshot);
+        }
+        break;
+      }
+    }
+  }
+
+  private startLaunchCountdown(): void {
+    this.countdownTimer = 3;
+    this.uiManager.setMatchCountdown(3);
+
+    const interval = window.setInterval(() => {
+      if (this.countdownTimer !== null) {
+        this.countdownTimer--;
+        this.uiManager.setMatchCountdown(this.countdownTimer);
+
+        if (this.countdownTimer <= 0) {
+          clearInterval(interval);
+          this.countdownTimer = null;
+          this.uiManager.setMatchCountdown(null);
+
+          const room = this.uiManager.getMultiplayerRoom();
+          const seed = Date.now();
+          const map = room?.mapType || 'space';
+          const diff = room?.difficulty || 'easy';
+          const p1 = room?.hostTag || this.uiManager.getGamertag();
+          const p2 = room?.guestTag || 'PLAYER 2';
+
+          this.network.broadcast({
+            type: 'START_MATCH',
+            roomId: room?.id || 'ROOM',
+            seed,
+            mapType: map,
+            difficulty: diff,
+            p1Tag: p1,
+            p2Tag: p2,
+          });
+
+          this.startNewCoopGame(map, diff, p1, p2, true, seed);
+        }
+      } else {
+        clearInterval(interval);
+      }
+    }, 800);
   }
 
   private setupUICallbacks(): void {
@@ -136,10 +348,104 @@ class Game {
 
     this.uiManager.onPauseGame = () => {
       this.togglePause();
+      if (this.gameMode === 'multiplayer' && this.currentRoomId) {
+        this.network.broadcast({
+          type: 'PAUSE_GAME',
+          roomId: this.currentRoomId,
+          role: this.localRole,
+          paused: this.gameState === 'paused',
+        });
+      }
     };
 
     this.uiManager.onSetGameSpeed = (speed) => {
       this.gameSpeed = speed;
+      if (this.gameMode === 'multiplayer' && this.currentRoomId) {
+        this.network.broadcast({
+          type: 'SET_GAME_SPEED',
+          roomId: this.currentRoomId,
+          role: this.localRole,
+          speed,
+        });
+      }
+    };
+
+    this.uiManager.onCreateMultiplayerRoom = (mapType, difficulty) => {
+      const myTag = this.uiManager.getGamertag();
+      this.isHost = true;
+      this.localRole = 'p1';
+      this.p1Tag = myTag;
+      this.uiManager.setP1Tag(myTag);
+      this.uiManager.setLocalPlayerRole('p1');
+      const room = this.network.createRoom(myTag, mapType, difficulty);
+      this.currentRoomId = room.id;
+      this.uiManager.setMultiplayerRoom(room);
+      this.uiManager.setActiveMenuScreen('multiplayer_waiting_room');
+    };
+
+    this.uiManager.onJoinMultiplayerRoom = (roomId) => {
+      const myTag = this.uiManager.getGamertag();
+      this.isHost = false;
+      this.localRole = 'p2';
+      this.p2Tag = myTag;
+      this.uiManager.setP2Tag(myTag);
+      this.uiManager.setLocalPlayerRole('p2');
+      this.currentRoomId = roomId;
+      this.network.requestJoinRoom(roomId, myTag);
+    };
+
+    this.uiManager.onQueryRooms = () => {
+      this.network.queryOpenRooms();
+    };
+
+    this.uiManager.onLeaveMultiplayerRoom = () => {
+      this.network.leaveCurrentRoom();
+      this.currentRoomId = null;
+      this.uiManager.setMultiplayerRoom(null);
+      this.countdownTimer = null;
+      this.uiManager.setMatchCountdown(null);
+    };
+
+    this.uiManager.onToggleMultiplayerReady = (ready) => {
+      this.network.toggleReady(ready);
+      const room = this.uiManager.getMultiplayerRoom();
+      if (room) {
+        if (this.localRole === 'p1') room.hostReady = ready;
+        else room.guestReady = ready;
+        this.uiManager.setMultiplayerRoom(room);
+
+        // If I am Host and both players are ready, start countdown immediately
+        if (this.isHost && room.hostReady && room.guestReady && this.countdownTimer === null) {
+          this.startLaunchCountdown();
+        }
+      }
+    };
+
+    this.uiManager.onPingTile = (col, row) => {
+      this.uiManager.addPing(col, row, this.localRole);
+      if (this.currentRoomId) {
+        this.network.broadcast({
+          type: 'PING_TILE',
+          roomId: this.currentRoomId,
+          role: this.localRole,
+          col,
+          row,
+        });
+      }
+    };
+
+    this.uiManager.onSendCursorMove = (col, row, canvasX, canvasY) => {
+      if (this.currentRoomId) {
+        this.network.broadcast({
+          type: 'CURSOR_MOVE',
+          roomId: this.currentRoomId,
+          role: this.localRole,
+          col,
+          row,
+          canvasX,
+          canvasY,
+        });
+      }
     };
 
     this.uiManager.onSetMusicVolume = (v) => {
@@ -184,6 +490,13 @@ class Game {
     this.uiManager.onPreviewTypeKey = () => {
       this.audioManager.playSFX('typeKey');
     };
+
+    this.uiManager.onGetCombatStats = () => ({
+      p1: this.damageCalculator.getStats('p1'),
+      p2: this.damageCalculator.getStats('p2'),
+      split: this.damageCalculator.getContributionSplit(),
+      waveLeader: this.damageCalculator.getWaveLeader(this.p1Tag, this.p2Tag),
+    });
   }
 
   private fmtStat(value: number): string {
@@ -219,7 +532,9 @@ class Game {
     return 1;
   }
 
-  private startNewGame(difficulty: DifficultyMode = 'easy', mapType: MapType = 'space'): void {
+  public startNewGame(difficulty: DifficultyMode = 'easy', mapType: MapType = 'space'): void {
+    this.gameMode = 'solo';
+    this.uiManager.setGameMode('solo');
     this.difficultyMode = difficulty;
     this.difficultyHpMultiplier = this.getDifficultyHpMultiplier(difficulty);
 
@@ -235,15 +550,66 @@ class Game {
     this.projectiles = [];
     this.effects = [];
     this.waveSystem = new WaveSystem();
+    this.waveSystem.setSeed(Date.now());
     this.economySystem = new EconomySystem(150);
+    this.economySystem.setMultiplayer(false);
     this.healthSystem = new HealthSystem(20, 20);
+    this.damageCalculator.reset();
+    this.damageCalculator.setMultiplayer(false);
     this.bannerTimer = 0;
 
-    // Brief delay before the first wave; timing advances via update(dt) so it
-    // pauses and resumes correctly with the game state.
+    // Brief delay before the first wave
     this.waveSystem.scheduleWave(1, 1);
 
     // Start BGM
+    this.audioManager.startBGM();
+  }
+
+  public startNewCoopGame(
+    mapType: MapType = 'space',
+    difficulty: DifficultyMode = 'easy',
+    p1Tag: string = 'HOST',
+    p2Tag: string = 'GUEST',
+    isHost: boolean = true,
+    seed: number = Date.now()
+  ): void {
+    this.gameMode = 'multiplayer';
+    this.uiManager.setGameMode('multiplayer');
+    this.isHost = isHost;
+    this.localRole = isHost ? 'p1' : 'p2';
+    this.p1Tag = p1Tag;
+    this.p2Tag = p2Tag;
+    this.uiManager.setP1Tag(p1Tag);
+    this.uiManager.setP2Tag(p2Tag);
+    this.uiManager.setLocalPlayerRole(this.localRole);
+    this.rngSeed = seed;
+
+    this.difficultyMode = difficulty;
+    this.difficultyHpMultiplier = this.getDifficultyHpMultiplier(difficulty);
+
+    this.tileMap.setMap(mapType);
+    this.waypoints = this.tileMap.getWaypoints();
+
+    // Reset game state
+    this.gameState = 'playing';
+    this.uiManager.setGameState('playing');
+    Object.assign(this.gameData, { lives: 20, gold: 150, wave: 1, score: 0 });
+    this.enemies = [];
+    this.towers = [];
+    this.projectiles = [];
+    this.effects = [];
+    this.waveSystem = new WaveSystem();
+    this.waveSystem.setSeed(this.rngSeed);
+    this.economySystem = new EconomySystem(150);
+    this.economySystem.setMultiplayer(true, 150);
+    this.uiManager.setP1Gold(150);
+    this.uiManager.setP2Gold(150);
+    this.healthSystem = new HealthSystem(20, 20);
+    this.damageCalculator.reset();
+    this.damageCalculator.setMultiplayer(true);
+    this.bannerTimer = 0;
+
+    this.waveSystem.scheduleWave(1, 1);
     this.audioManager.startBGM();
   }
 
@@ -320,18 +686,57 @@ class Game {
     const stats = TOWER_STATS[towerType];
     if (!stats) return false;
 
-    if (!this.economySystem.spendGold(stats.cost)) {
+    const isMp = this.gameMode === 'multiplayer';
+    const spendSuccess = isMp
+      ? this.economySystem.spendGold(stats.cost, this.localRole)
+      : this.economySystem.spendGold(stats.cost);
+
+    if (!spendSuccess) {
       this.audioManager.playSFX('click'); // Error sound
       return false;
     }
 
     // Create and place tower
-    const tower = new Tower(towerType, x, y);
+    const ownerRole = isMp ? this.localRole : undefined;
+    const ownerTag = isMp ? (this.localRole === 'p1' ? this.p1Tag : this.p2Tag) : undefined;
+    const tower = new Tower(towerType, x, y, ownerRole, ownerTag);
     this.towers.push(tower);
     this.syncGold();
     this.audioManager.playSFX('click');
 
+    // Broadcast placement in multiplayer
+    if (isMp && this.currentRoomId) {
+      this.network.broadcast({
+        type: 'PLACE_TOWER',
+        roomId: this.currentRoomId,
+        role: this.localRole,
+        towerType,
+        col,
+        row,
+        towerId: tower.id,
+      });
+    }
+
     return true;
+  }
+
+  private handleRemotePlaceTower(
+    type: TowerType,
+    col: number,
+    row: number,
+    role: PlayerRole,
+    towerId: string
+  ): void {
+    const stats = TOWER_STATS[type];
+    if (!stats) return;
+
+    this.economySystem.spendGold(stats.cost, role);
+    const x = col * 32 + 16;
+    const y = row * 32 + 16;
+    const ownerTag = role === 'p1' ? this.p1Tag : this.p2Tag;
+    const tower = new Tower(type, x, y, role, ownerTag, towerId);
+    this.towers.push(tower);
+    this.syncGold();
   }
 
   private selectTower(col: number, row: number): void {
@@ -357,13 +762,40 @@ class Game {
 
     // Use current upgrade option for the tower
     const option = options[0];
+    const isMp = this.gameMode === 'multiplayer';
+    const spendSuccess = isMp
+      ? this.economySystem.spendGold(option.cost, this.localRole)
+      : this.economySystem.spendGold(option.cost);
 
-    if (this.economySystem.spendGold(option.cost)) {
+    if (spendSuccess) {
       this.syncGold();
       option.apply(tower);
       tower.data.level++;
       this.audioManager.playSFX('click');
+
+      if (isMp && this.currentRoomId) {
+        this.network.broadcast({
+          type: 'UPGRADE_TOWER',
+          roomId: this.currentRoomId,
+          role: this.localRole,
+          towerId: tower.id,
+        });
+      }
     }
+  }
+
+  private handleRemoteUpgradeTower(towerId: string, role: PlayerRole): void {
+    const tower = this.towers.find(t => t.id === towerId);
+    if (!tower) return;
+
+    const options = this.upgradeSystem.getUpgradeOptions(tower);
+    if (options.length === 0) return;
+
+    const option = options[0];
+    this.economySystem.spendGold(option.cost, role);
+    option.apply(tower);
+    tower.data.level++;
+    this.syncGold();
   }
 
   private sellSelectedTower(): void {
@@ -375,15 +807,40 @@ class Game {
 
     const tower = this.towers[towerIndex];
     const sellValue = this.upgradeSystem.sellTower(tower);
+    const isMp = this.gameMode === 'multiplayer';
     
     // Remove tower
     this.towers.splice(towerIndex, 1);
 
     // Add gold
-    this.economySystem.addGold(sellValue);
+    if (isMp) {
+      this.economySystem.addGold(sellValue, this.localRole);
+    } else {
+      this.economySystem.addGold(sellValue);
+    }
     this.syncGold();
     this.uiManager.setSelectedTower(null);
     this.audioManager.playSFX('click');
+
+    if (isMp && this.currentRoomId) {
+      this.network.broadcast({
+        type: 'SELL_TOWER',
+        roomId: this.currentRoomId,
+        role: this.localRole,
+        towerId: tower.id,
+      });
+    }
+  }
+
+  private handleRemoteSellTower(towerId: string, role: PlayerRole): void {
+    const towerIndex = this.towers.findIndex(t => t.id === towerId);
+    if (towerIndex === -1) return;
+
+    const tower = this.towers[towerIndex];
+    const sellValue = this.upgradeSystem.sellTower(tower);
+    this.towers.splice(towerIndex, 1);
+    this.economySystem.addGold(sellValue, role);
+    this.syncGold();
   }
 
   public setGameSpeed(speed: GameSpeed): void {
@@ -396,7 +853,22 @@ class Game {
   }
 
   private update(dt: number): void {
+    this.uiManager.updatePings(dt);
+
     if (this.gameState !== 'playing') return;
+
+    // In multiplayer mode, if local player is Guest (P2), Host (P1) is authoritative over the simulation loop.
+    if (this.gameMode === 'multiplayer' && !this.isHost) {
+      for (const effect of this.effects) {
+        effect.update(dt);
+      }
+      this.effects = this.effects.filter(e => e.alive);
+      if (this.bannerTimer > 0) {
+        this.bannerTimer = Math.max(0, this.bannerTimer - dt * this.gameSpeed);
+      }
+      this.syncGold();
+      return;
+    }
 
     const totalDt = dt * this.gameSpeed;
     const maxSubStep = 0.033;
@@ -411,6 +883,167 @@ class Game {
 
     if (this.bannerTimer > 0) {
       this.bannerTimer = Math.max(0, this.bannerTimer - dt * this.gameSpeed);
+    }
+
+    this.syncGold();
+
+    // In multiplayer, Host broadcasts authoritative state snapshot to Guest
+    if (this.gameMode === 'multiplayer' && this.isHost && this.currentRoomId) {
+      this.broadcastHostSnapshot();
+    }
+  }
+
+  private frameCount: number = 0;
+
+  private broadcastHostSnapshot(): void {
+    if (!this.currentRoomId) return;
+    this.frameCount++;
+
+    const enemySnaps: EnemySnapshot[] = this.enemies.map(e => ({
+      id: e.id,
+      type: e.data.type,
+      x: e.position.x,
+      y: e.position.y,
+      hp: e.data.currentHp,
+      maxHp: e.data.hp * e.getHpMultiplier(),
+      waypointIndex: e.data.waypointIndex,
+      slowFactor: e.data.slowFactor,
+      alive: e.alive,
+    }));
+
+    const projSnaps: ProjectileSnapshot[] = this.projectiles.map(p => ({
+      id: p.id,
+      type: p.data.type,
+      x: p.position.x,
+      y: p.position.y,
+      dirX: p.direction.x,
+      dirY: p.direction.y,
+      level: p.data.level ?? 1,
+      alive: p.alive,
+    }));
+
+    const towerSnaps: TowerSnapshot[] = this.towers.map(t => ({
+      id: t.id,
+      type: t.data.type,
+      x: t.position.x,
+      y: t.position.y,
+      level: t.data.level,
+      ownerRole: t.data.ownerRole,
+      ownerTag: t.data.ownerTag,
+      targetId: t.data.targetId,
+    }));
+
+    const snapshot: HostStateSnapshot = {
+      frame: this.frameCount,
+      wave: this.gameData.wave,
+      lives: this.gameData.lives,
+      score: this.gameData.score,
+      gameState: this.gameState,
+      bannerTimer: this.bannerTimer,
+      bannerWave: this.bannerWave,
+      p1Gold: this.economySystem.getP1Gold(),
+      p2Gold: this.economySystem.getP2Gold(),
+      p1Stats: this.damageCalculator.getStats('p1'),
+      p2Stats: this.damageCalculator.getStats('p2'),
+      enemies: enemySnaps,
+      projectiles: projSnaps,
+      towers: towerSnaps,
+    };
+
+    this.network.broadcast({
+      type: 'HOST_SNAPSHOT',
+      roomId: this.currentRoomId,
+      snapshot,
+    });
+  }
+
+  private handleHostSnapshot(snap: HostStateSnapshot): void {
+    this.gameData.lives = snap.lives;
+    this.healthSystem.setLives(snap.lives);
+    this.gameData.score = snap.score;
+    this.gameData.wave = snap.wave;
+    this.bannerTimer = snap.bannerTimer;
+    this.bannerWave = snap.bannerWave;
+    this.economySystem.setGold(snap.p1Gold, 'p1');
+    this.economySystem.setGold(snap.p2Gold, 'p2');
+    this.damageCalculator.setStats(snap.p1Stats, snap.p2Stats);
+
+    // Sync enemies
+    const currentEnemyMap = new Map(this.enemies.map(e => [e.id, e]));
+    const updatedEnemies: Enemy[] = [];
+
+    for (const snapEnemy of snap.enemies) {
+      let enemy = currentEnemyMap.get(snapEnemy.id);
+      if (!enemy) {
+        enemy = new Enemy(
+          snapEnemy.type,
+          snapEnemy.waypointIndex,
+          this.waypoints,
+          this.difficultyHpMultiplier,
+          snapEnemy.id
+        );
+      }
+      enemy.position.x = snapEnemy.x;
+      enemy.position.y = snapEnemy.y;
+      enemy.data.currentHp = snapEnemy.hp;
+      enemy.data.slowFactor = snapEnemy.slowFactor;
+      enemy.data.waypointIndex = snapEnemy.waypointIndex;
+      enemy.alive = snapEnemy.alive;
+      updatedEnemies.push(enemy);
+    }
+    this.enemies = updatedEnemies;
+
+    // Sync projectiles
+    const currentProjMap = new Map(this.projectiles.map(p => [p.id, p]));
+    const updatedProjectiles: Projectile[] = [];
+
+    for (const snapProj of snap.projectiles) {
+      let proj = currentProjMap.get(snapProj.id);
+      if (!proj) {
+        proj = new Projectile(
+          snapProj.type,
+          snapProj.x + 8,
+          snapProj.y + 8,
+          snapProj.x + 8 + snapProj.dirX * 50,
+          snapProj.y + 8 + snapProj.dirY * 50,
+          0,
+          { level: snapProj.level, customId: snapProj.id }
+        );
+      }
+      proj.position.x = snapProj.x;
+      proj.position.y = snapProj.y;
+      proj.direction.x = snapProj.dirX;
+      proj.direction.y = snapProj.dirY;
+      proj.data.level = snapProj.level;
+      proj.alive = snapProj.alive;
+      updatedProjectiles.push(proj);
+    }
+    this.projectiles = updatedProjectiles;
+
+    // Sync towers
+    const currentTowerMap = new Map(this.towers.map(t => [t.id, t]));
+    const updatedTowers: Tower[] = [];
+
+    for (const snapTower of snap.towers) {
+      let tower = currentTowerMap.get(snapTower.id);
+      if (!tower) {
+        tower = new Tower(
+          snapTower.type,
+          snapTower.x + 16,
+          snapTower.y + 16,
+          snapTower.ownerRole,
+          snapTower.ownerTag,
+          snapTower.id
+        );
+      }
+      tower.data.level = snapTower.level;
+      tower.data.targetId = snapTower.targetId ?? null;
+      updatedTowers.push(tower);
+    }
+    this.towers = updatedTowers;
+
+    if (snap.gameState === 'gameOver' && this.gameState !== 'gameOver') {
+      this.gameOver();
     }
 
     this.syncGold();
@@ -468,6 +1101,7 @@ class Game {
         const enemy = this.enemies.find(e => e.id === collisionResult.hitId);
         if (enemy && enemy.alive) {
           const damage = enemy.takeDamage(collisionResult.damage);
+          this.damageCalculator.recordDamage(projectile.data.ownerRole, damage, projectile.data.towerType);
           
           // Apply slow effect
           if (projectile.data.slowFactor) {
@@ -479,9 +1113,17 @@ class Game {
           
           // Check if enemy died
           if (!enemy.alive) {
-            this.economySystem.addGold(enemy.data.reward);
-            this.gameData.score += enemy.data.reward * 10;
-            this.addEffect('death', enemy.position.x, enemy.position.y, `+${enemy.data.reward}`);
+            this.damageCalculator.recordKill(projectile.data.ownerRole);
+            if (this.gameMode === 'multiplayer') {
+              const split = this.economySystem.awardSplitReward(enemy.data.reward);
+              this.gameData.score += enemy.data.reward * 10;
+              this.addEffect('death', enemy.position.x, enemy.position.y, `+${split.p1Amount}g`);
+            } else {
+              this.economySystem.addGold(enemy.data.reward);
+              this.gameData.score += enemy.data.reward * 10;
+              this.addEffect('death', enemy.position.x, enemy.position.y, `+${enemy.data.reward}`);
+            }
+            this.syncGold();
             this.audioManager.playSFX('kill');
           } else {
             this.audioManager.playSFX('hit');
@@ -497,7 +1139,22 @@ class Game {
             if (enemy.id !== collisionResult.hitId && enemy.alive) {
               const dist = CollisionSystem.distance(projectile.position, enemy.position);
               if (dist <= (projectile.data.splashRadius || 0)) {
-                enemy.takeDamage(collisionResult.damage * 0.5);
+                const splashDmg = enemy.takeDamage(collisionResult.damage * 0.5);
+                this.damageCalculator.recordDamage(projectile.data.ownerRole, splashDmg, projectile.data.towerType);
+                if (!enemy.alive) {
+                  this.damageCalculator.recordKill(projectile.data.ownerRole);
+                  if (this.gameMode === 'multiplayer') {
+                    const split = this.economySystem.awardSplitReward(enemy.data.reward);
+                    this.gameData.score += enemy.data.reward * 10;
+                    this.addEffect('death', enemy.position.x, enemy.position.y, `+${split.p1Amount}g`);
+                  } else {
+                    this.economySystem.addGold(enemy.data.reward);
+                    this.gameData.score += enemy.data.reward * 10;
+                    this.addEffect('death', enemy.position.x, enemy.position.y, `+${enemy.data.reward}`);
+                  }
+                  this.syncGold();
+                  this.audioManager.playSFX('kill');
+                }
                 this.addEffect('explosion', projectile.position.x, projectile.position.y);
               }
             }
@@ -540,6 +1197,8 @@ class Game {
         slowFactor: tower.data.slowFactor,
         slowDuration: tower.data.slowDuration,
         level: tower.data.level,
+        ownerRole: tower.data.ownerRole,
+        towerType: tower.data.type,
       }
     );
 
@@ -553,20 +1212,46 @@ class Game {
   private handleWaveComplete(): void {
     // Bonus gold for completing wave
     const bonusGold = 20 + this.gameData.wave * 5;
-    this.economySystem.addGold(bonusGold);
+    if (this.gameMode === 'multiplayer') {
+      this.economySystem.awardSplitReward(bonusGold);
+    } else {
+      this.economySystem.addGold(bonusGold);
+    }
     this.syncGold();
 
     // Banner shows the wave that was just cleared
     this.bannerWave = this.gameData.wave;
     this.bannerTimer = 2;
 
-    // Advance to the next wave after a pause (countdown driven by update(dt))
-    this.gameData.wave++;
-    this.waveSystem.scheduleWave(this.gameData.wave, this.wavePauseDuration);
+    if (this.gameMode === 'multiplayer') {
+      if (this.isHost) {
+        this.gameData.wave++;
+        const nextConfig = this.waveSystem.generateWave(this.gameData.wave);
+        this.waveSystem.scheduleWave(this.gameData.wave, this.wavePauseDuration, nextConfig);
+        this.damageCalculator.resetWaveDamage();
+        if (this.currentRoomId) {
+          this.network.broadcast({
+            type: 'START_WAVE',
+            roomId: this.currentRoomId,
+            role: this.localRole,
+            waveNumber: this.gameData.wave,
+            config: nextConfig,
+          });
+        }
+      } else {
+        this.damageCalculator.resetWaveDamage();
+      }
+    } else {
+      this.damageCalculator.resetWaveDamage();
+      this.gameData.wave++;
+      this.waveSystem.scheduleWave(this.gameData.wave, this.wavePauseDuration);
+    }
   }
 
   private syncGold(): void {
-    this.gameData.gold = this.economySystem.getGold();
+    this.gameData.gold = this.economySystem.getGold(this.localRole);
+    this.uiManager.setP1Gold(this.economySystem.getP1Gold());
+    this.uiManager.setP2Gold(this.economySystem.getP2Gold());
   }
 
   private gameOver(): void {
@@ -647,7 +1332,15 @@ class Game {
       this.ctx.fillStyle = `rgba(255, 215, 0, ${alpha})`;
       this.ctx.font = 'bold 32px monospace';
       this.ctx.textAlign = 'center';
-      this.ctx.fillText(`Wave ${this.bannerWave} Complete!`, this.canvas.width / 2, this.canvas.height / 2);
+      this.ctx.fillText(`Wave ${this.bannerWave} Complete!`, this.canvas.width / 2, this.canvas.height / 2 - (this.gameMode === 'multiplayer' ? 18 : 0));
+      if (this.gameMode === 'multiplayer') {
+        const leader = this.damageCalculator.getWaveLeader(this.p1Tag, this.p2Tag);
+        if (leader && leader.waveDamage > 0) {
+          this.ctx.fillStyle = `rgba(0, 229, 255, ${alpha})`;
+          this.ctx.font = 'bold 20px monospace';
+          this.ctx.fillText(`★ WAVE MVP: ${leader.tag} (${leader.waveDamage.toLocaleString()} DMG) ★`, this.canvas.width / 2, this.canvas.height / 2 + 18);
+        }
+      }
       this.ctx.textAlign = 'left';
     }
 
@@ -676,12 +1369,58 @@ class Game {
       this.ctx.fillStyle = '#FF4444';
       this.ctx.font = 'bold 64px monospace';
       this.ctx.textAlign = 'center';
-      this.ctx.fillText('GAME OVER', this.canvas.width / 2, this.canvas.height / 2 - 50);
+      this.ctx.fillText('GAME OVER', this.canvas.width / 2, this.canvas.height / 2 - (this.gameMode === 'multiplayer' ? 140 : 50));
       
       this.ctx.fillStyle = '#FFFFFF';
       this.ctx.font = '24px monospace';
-      this.ctx.fillText(`Final Wave: ${this.gameData.wave}`, this.canvas.width / 2, this.canvas.height / 2 + 20);
-      this.ctx.fillText(`Score: ${this.gameData.score}`, this.canvas.width / 2, this.canvas.height / 2 + 50);
+      this.ctx.fillText(`Final Wave: ${this.gameData.wave}`, this.canvas.width / 2, this.canvas.height / 2 - (this.gameMode === 'multiplayer' ? 80 : -20));
+      this.ctx.fillText(`Score: ${this.gameData.score}`, this.canvas.width / 2, this.canvas.height / 2 - (this.gameMode === 'multiplayer' ? 50 : -50));
+      
+      if (this.gameMode === 'multiplayer') {
+        const p1Stats = this.damageCalculator.getStats('p1');
+        const p2Stats = this.damageCalculator.getStats('p2');
+        const split = this.damageCalculator.getContributionSplit();
+        const mvp = p1Stats.totalDamage >= p2Stats.totalDamage
+          ? { tag: this.p1Tag, dmg: p1Stats.totalDamage, role: 'p1' }
+          : { tag: this.p2Tag, dmg: p2Stats.totalDamage, role: 'p2' };
+
+        // MVP Badge
+        this.ctx.fillStyle = '#FFD700';
+        this.ctx.font = 'bold 22px monospace';
+        this.ctx.fillText(`🏆 MATCH MVP: ${mvp.tag} (${Math.round(mvp.dmg).toLocaleString()} DMG) 🏆`, this.canvas.width / 2, this.canvas.height / 2 - 10);
+
+        // Stats card box
+        const boxW = 560;
+        const boxH = 110;
+        const boxX = (this.canvas.width - boxW) / 2;
+        const boxY = this.canvas.height / 2 + 15;
+        this.ctx.fillStyle = 'rgba(20, 30, 48, 0.9)';
+        this.ctx.fillRect(boxX, boxY, boxW, boxH);
+        this.ctx.strokeStyle = '#00E5FF';
+        this.ctx.lineWidth = 1.5;
+        this.ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+        // Column 1: P1
+        this.ctx.textAlign = 'left';
+        this.ctx.fillStyle = '#00E5FF';
+        this.ctx.font = 'bold 15px monospace';
+        this.ctx.fillText(`[P1] ${this.p1Tag}`, boxX + 24, boxY + 28);
+
+        this.ctx.fillStyle = '#FFFFFF';
+        this.ctx.font = '13px monospace';
+        this.ctx.fillText(`Damage: ${Math.round(p1Stats.totalDamage).toLocaleString()} (${split.p1Percent}%)`, boxX + 24, boxY + 56);
+        this.ctx.fillText(`Kills: ${p1Stats.kills}  |  Gold: ${this.economySystem.getP1Gold()}g`, boxX + 24, boxY + 84);
+
+        // Column 2: P2
+        this.ctx.fillStyle = '#FF007F';
+        this.ctx.font = 'bold 15px monospace';
+        this.ctx.fillText(`[P2] ${this.p2Tag}`, boxX + 310, boxY + 28);
+
+        this.ctx.fillStyle = '#FFFFFF';
+        this.ctx.font = '13px monospace';
+        this.ctx.fillText(`Damage: ${Math.round(p2Stats.totalDamage).toLocaleString()} (${split.p2Percent}%)`, boxX + 310, boxY + 56);
+        this.ctx.fillText(`Kills: ${p2Stats.kills}  |  Gold: ${this.economySystem.getP2Gold()}g`, boxX + 310, boxY + 84);
+      }
       this.ctx.textAlign = 'left';
     }
 
@@ -693,29 +1432,60 @@ class Game {
       const areaHeight = this.canvas.height - topBar - bottomBar;
       const centerY = areaY + areaHeight / 2;
 
-      this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-      this.ctx.fillRect(0, areaY, this.canvas.width, areaHeight);
+      if (this.uiManager.getActiveMenuScreen() === 'solo_menu') {
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        this.ctx.fillRect(0, areaY, this.canvas.width, areaHeight);
 
-      this.ctx.fillStyle = '#FFD700';
-      this.ctx.font = 'bold 72px monospace';
-      this.ctx.textAlign = 'center';
-      this.ctx.fillText('TOWER DEFENCE', this.canvas.width / 2, centerY - 100);
+        this.ctx.fillStyle = '#FFD700';
+        this.ctx.font = 'bold 72px monospace';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText('TOWER DEFENCE', this.canvas.width / 2, centerY - 100);
 
-      this.ctx.fillStyle = '#FFFFFF';
-      this.ctx.font = '24px monospace';
-      this.ctx.fillText('Defend your base from waves of enemies!', this.canvas.width / 2, centerY - 30);
+        this.ctx.fillStyle = '#FFFFFF';
+        this.ctx.font = '24px monospace';
+        this.ctx.fillText('Defend your base from waves of enemies!', this.canvas.width / 2, centerY - 30);
 
-      this.ctx.fillStyle = '#7EC8FF';
-      this.ctx.font = '18px monospace';
-      this.ctx.fillText('Click START to begin', this.canvas.width / 2, centerY + 30);
-      this.ctx.textAlign = 'left';
+        this.ctx.fillStyle = '#7EC8FF';
+        this.ctx.font = '18px monospace';
+        this.ctx.fillText('Click START to begin', this.canvas.width / 2, centerY + 25);
+
+        // Change Mode Button on Solo Menu
+        const modeBtnX = this.canvas.width / 2 - 160;
+        const modeBtnY = centerY + 70;
+        const modeBtnW = 320;
+        const modeBtnH = 46;
+
+        this.ctx.fillStyle = 'rgba(24, 38, 64, 0.95)';
+        this.ctx.fillRect(modeBtnX, modeBtnY, modeBtnW, modeBtnH);
+        this.ctx.strokeStyle = '#00E5FF';
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(modeBtnX, modeBtnY, modeBtnW, modeBtnH);
+
+        this.ctx.fillStyle = '#00E5FF';
+        this.ctx.font = 'bold 14px monospace';
+        this.ctx.textAlign = 'center';
+        this.ctx.fillText('⚔️ CHANGE MODE (SOLO / CO-OP)', modeBtnX + modeBtnW / 2, modeBtnY + 28);
+        this.ctx.textAlign = 'left';
+      } else if (this.uiManager.getActiveMenuScreen() === 'mode_select') {
+        this.uiManager.renderModeSelect(this.ctx);
+      } else if (this.uiManager.getActiveMenuScreen() === 'multiplayer_hub') {
+        this.uiManager.renderMultiplayerHub(this.ctx);
+      } else if (this.uiManager.getActiveMenuScreen() === 'multiplayer_create') {
+        this.uiManager.renderMultiplayerCreate(this.ctx);
+      } else if (this.uiManager.getActiveMenuScreen() === 'multiplayer_browse') {
+        this.uiManager.renderMultiplayerBrowse(this.ctx);
+      } else if (this.uiManager.getActiveMenuScreen() === 'multiplayer_waiting_room') {
+        this.uiManager.renderMultiplayerWaitingRoom(this.ctx);
+      }
     }
 
-    // Settings, help, leaderboard, and high score modals render on top of everything else
+    // Settings, help, leaderboard, high score, and gamertag modals render on top of everything else
     this.uiManager.renderHelp(this.ctx);
     this.uiManager.renderSettings(this.ctx);
     this.uiManager.renderLeaderboardModal(this.ctx);
     this.uiManager.renderHighScoreEntry(this.ctx);
+    this.uiManager.renderGamertagModal(this.ctx);
+    this.uiManager.renderDamageStatsModal(this.ctx);
   }
 }
 
@@ -816,6 +1586,10 @@ class Effect {
 }
 
 // Initialize game when page loads
-window.addEventListener('load', () => {
+if (document.getElementById('game-canvas')) {
   new Game();
-});
+} else {
+  window.addEventListener('DOMContentLoaded', () => {
+    new Game();
+  });
+}

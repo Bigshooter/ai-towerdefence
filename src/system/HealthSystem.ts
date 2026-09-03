@@ -15,6 +15,10 @@ export class HealthSystem {
     return this.data.lives;
   }
 
+  setLives(lives: number): void {
+    this.data.lives = lives;
+  }
+
   getMaxLives(): number {
     return this.data.maxLives;
   }

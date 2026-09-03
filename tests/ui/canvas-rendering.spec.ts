@@ -42,4 +42,14 @@ test.describe('Canvas and UI Rendering', () => {
     const hoveredTile = await page.evaluate(() => (window as any).uiManager?.getHoveredTile?.());
     expect(hoveredTile).toEqual({ col: 5, row: 5 });
   });
+
+  test('should preserve the canvas aspect ratio in a constrained viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 900, height: 700 });
+
+    const boundingBox = await gamePage.canvas.boundingBox();
+    expect(boundingBox).not.toBeNull();
+    expect(boundingBox!.width).toBeLessThanOrEqual(900);
+    expect(boundingBox!.height).toBeLessThanOrEqual(700);
+    expect(boundingBox!.width / boundingBox!.height).toBeCloseTo(4 / 3, 2);
+  });
 });

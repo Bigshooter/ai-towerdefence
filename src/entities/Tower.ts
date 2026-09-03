@@ -1,5 +1,5 @@
 import { BaseEntity } from './BaseEntity';
-import { TowerType, TowerStats, Position } from '../types';
+import { TowerType, TowerStats, Position, PlayerRole } from '../types';
 import { SpaceSprites } from '../visuals/SpaceSprites';
 
 export interface TowerData extends TowerStats {
@@ -7,6 +7,8 @@ export interface TowerData extends TowerStats {
   level: number;
   fireCooldown: number;
   targetId: string | null;
+  ownerRole?: PlayerRole;
+  ownerTag?: string;
 }
 
 export const TOWER_STATS: Record<TowerType, TowerStats> = {
@@ -22,9 +24,10 @@ export class Tower extends BaseEntity {
   private animTimer: number = 0;
   private animFrame: number = 0;
 
-  constructor(type: TowerType, x: number, y: number) {
+  constructor(type: TowerType, x: number, y: number, ownerRole?: PlayerRole, ownerTag?: string, customId?: string) {
     const stats = TOWER_STATS[type];
-    super(`tower_${type}_${Math.random().toString(36).substr(2, 9)}`, x - 16, y - 16, 32, 32);
+    const id = customId || `tower_${type}_${Math.random().toString(36).substr(2, 9)}`;
+    super(id, x - 16, y - 16, 32, 32);
 
     this.data = {
       ...stats,
@@ -32,6 +35,8 @@ export class Tower extends BaseEntity {
       level: 1,
       fireCooldown: 0,
       targetId: null,
+      ownerRole,
+      ownerTag,
     };
   }
 
@@ -84,6 +89,20 @@ export class Tower extends BaseEntity {
     const x = this.position.x;
     const y = this.position.y;
 
+    // Ownership accent indicator under/around tower base
+    if (this.data.ownerRole) {
+      ctx.save();
+      const isP1 = this.data.ownerRole === 'p1';
+      ctx.strokeStyle = isP1 ? '#00E5FF' : '#FF007F';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x - 1, y - 1, this.size.width + 2, this.size.height + 2);
+
+      // Small corner ownership pip
+      ctx.fillStyle = isP1 ? '#00E5FF' : '#FF007F';
+      ctx.fillRect(x - 2, y - 2, 6, 6);
+      ctx.restore();
+    }
+
     SpaceSprites.drawTower(
       ctx,
       this.data.type,
@@ -96,10 +115,18 @@ export class Tower extends BaseEntity {
       this.data.level,
     );
 
-    // Level indicator
-    ctx.fillStyle = this.data.level >= 4 ? '#FFE57F' : this.data.level >= 2 ? '#58EAFF' : '#FFD700';
+    // Level & Owner indicator
+    const levelColor = this.data.level >= 4 ? '#FFE57F' : this.data.level >= 2 ? '#58EAFF' : '#FFD700';
+    ctx.fillStyle = levelColor;
     ctx.font = 'bold 10px monospace';
-    ctx.fillText(`Lv.${this.data.level}`, x + 8, y - 4);
+    
+    if (this.data.ownerRole) {
+      const isP1 = this.data.ownerRole === 'p1';
+      ctx.fillStyle = isP1 ? '#00E5FF' : '#FF007F';
+      ctx.fillText(`${isP1 ? 'P1' : 'P2'} Lv.${this.data.level}`, x + 2, y - 4);
+    } else {
+      ctx.fillText(`Lv.${this.data.level}`, x + 8, y - 4);
+    }
   }
 
   getRangeCircle(): { x: number; y: number; radius: number } {

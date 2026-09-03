@@ -9,11 +9,25 @@ export class TowerDefencePage {
     this.canvas = page.locator('#game-canvas');
   }
 
-  async goto() {
+  async goto(options: { skipGamertag?: boolean } = { skipGamertag: true }) {
     await this.page.goto('/');
     await expect(this.canvas).toBeVisible();
-    // Wait for game initialization
     await this.page.waitForFunction(() => (window as any).uiManager !== undefined);
+
+    if (options.skipGamertag !== false) {
+      await this.page.evaluate(() => {
+        try {
+          const um = (window as any).uiManager;
+          if (um) {
+            um.setGamertag('PLAYER');
+            um.closeGamertagModal();
+            um.setActiveMenuScreen('solo_menu');
+          }
+        } catch {
+          // ignore
+        }
+      });
+    }
   }
 
   async clickCanvasAt(x: number, y: number) {
@@ -288,6 +302,195 @@ export class TowerDefencePage {
   async getProjectileCacheKeys(): Promise<string[]> {
     return await this.page.evaluate(() => {
       return (window as any).SpaceSprites?.getProjectileCacheKeys?.() || [];
+    });
+  }
+
+  // --- Gamertag & Mode Selection Helpers ---
+
+  async isGamertagModalOpen(): Promise<boolean> {
+    return await this.page.evaluate(() => !!(window as any).uiManager?.isGamertagModalOpen?.());
+  }
+
+  async getGamertag(): Promise<string> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getGamertag?.() || '');
+  }
+
+  async getGamertagInput(): Promise<string> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getGamertagInput?.() || '');
+  }
+
+  async setGamertagInput(tag: string): Promise<void> {
+    await this.page.evaluate((t) => (window as any).uiManager?.setGamertagInput?.(t), tag);
+  }
+
+  async clickConfirmGamertag() {
+    await this.clickCanvasAt(570, 570);
+  }
+
+  async clickGamertagBackspace() {
+    await this.clickCanvasAt(760, 570);
+  }
+
+  async clickGamertagRandom() {
+    await this.clickCanvasAt(875, 305);
+  }
+
+  async clickGamertagClose() {
+    await this.clickCanvasAt(905, 298);
+  }
+
+  async getActiveMenuScreen(): Promise<string> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getActiveMenuScreen?.() || '');
+  }
+
+  async setActiveMenuScreen(screen: string): Promise<void> {
+    await this.page.evaluate((s) => (window as any).uiManager?.setActiveMenuScreen?.(s), screen);
+  }
+
+  async getGameMode(): Promise<string> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getGameMode?.() || '');
+  }
+
+  async clickPlaySoloCard() {
+    await this.clickCanvasAt(440, 645);
+  }
+
+  async clickPlayCoopCard() {
+    await this.clickCanvasAt(840, 645);
+  }
+
+  async clickChangeModeButton() {
+    // Center button on solo menu screen
+    await this.clickCanvasAt(640, 555);
+  }
+
+  async clickTopBarModeButton() {
+    // Top-left HUD mode button on solo menu
+    await this.clickCanvasAt(80, 25);
+  }
+
+  async clickTopBarPilotButton() {
+    // Top-left HUD pilot tag edit button on solo menu
+    await this.clickCanvasAt(240, 25);
+  }
+
+  // --- Multiplayer Lobby & Waiting Room Helpers ---
+
+  async clickCreateGameButton() {
+    await this.clickCanvasAt(640, 255);
+  }
+
+  async clickJoinGameButton() {
+    await this.clickCanvasAt(640, 345);
+  }
+
+  async clickBackToModeSelect() {
+    await this.clickCanvasAt(640, 435);
+  }
+
+  async selectCreateMapOption(map: 'space' | 'dungeon' | 'military') {
+    const coords = {
+      space: { x: 370, y: 220 },
+      dungeon: { x: 620, y: 220 },
+      military: { x: 870, y: 220 },
+    };
+    await this.clickCanvasAt(coords[map].x, coords[map].y);
+  }
+
+  async selectCreateDifficultyOption(diff: 'easy' | 'medium' | 'hard') {
+    const coords = {
+      easy: { x: 370, y: 355 },
+      medium: { x: 620, y: 355 },
+      hard: { x: 870, y: 355 },
+    };
+    await this.clickCanvasAt(coords[diff].x, coords[diff].y);
+  }
+
+  async clickCreateLobbyButton() {
+    await this.clickCanvasAt(500, 485);
+  }
+
+  async clickCreateBackButton() {
+    await this.clickCanvasAt(750, 485);
+  }
+
+  async clickRefreshRoomsButton() {
+    await this.clickCanvasAt(505, 624);
+  }
+
+  async clickBrowseBackButton() {
+    await this.clickCanvasAt(705, 624);
+  }
+
+  async clickJoinFirstRoomButton() {
+    await this.clickCanvasAt(975, 220);
+  }
+
+  async clickToggleReadyButton() {
+    await this.clickCanvasAt(510, 485);
+  }
+
+  async clickLeaveRoomButton() {
+    await this.clickCanvasAt(755, 485);
+  }
+
+  async getMultiplayerRoom(): Promise<any> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getMultiplayerRoom?.() || null);
+  }
+
+  async getP1Gold(): Promise<number> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getP1Gold?.() || 0);
+  }
+
+  async getP2Gold(): Promise<number> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getP2Gold?.() || 0);
+  }
+
+  // --- Combat Damage & Contribution Helpers ---
+
+  async isDamageStatsModalOpen(): Promise<boolean> {
+    return await this.page.evaluate(() => !!(window as any).uiManager?.getShowDamageStatsModal?.());
+  }
+
+  async clickDamageStatsButton() {
+    await this.clickCanvasAt(274, 25);
+  }
+
+  async clickDamageStatsClose() {
+    await this.clickCanvasAt(640, 700);
+  }
+
+  async getP1TotalDamage(): Promise<number> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getP1TotalDamage?.() || 0);
+  }
+
+  async getP2TotalDamage(): Promise<number> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getP2TotalDamage?.() || 0);
+  }
+
+  async getP1ContributionPercent(): Promise<number> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getP1ContributionPercent?.() || 50);
+  }
+
+  async getP2ContributionPercent(): Promise<number> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getP2ContributionPercent?.() || 50);
+  }
+
+  async getCombatStats(): Promise<any> {
+    return await this.page.evaluate(() => (window as any).uiManager?.onGetCombatStats?.() || null);
+  }
+
+  async getEnemies(): Promise<Array<{ id: string; type: string; hp: number; maxHp: number; position: { x: number; y: number }; alive: boolean }>> {
+    return await this.page.evaluate(() => {
+      const enemies = (window as any).game?.enemies || [];
+      return enemies.map((e: any) => ({
+        id: e.id,
+        type: e.data.type,
+        hp: e.data.currentHp,
+        maxHp: e.data.hp * (e.getHpMultiplier ? e.getHpMultiplier() : 1),
+        position: { x: e.position.x, y: e.position.y },
+        alive: e.alive,
+      }));
     });
   }
 }

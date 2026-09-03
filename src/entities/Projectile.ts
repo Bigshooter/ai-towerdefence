@@ -1,5 +1,5 @@
 import { BaseEntity } from './BaseEntity';
-import { Position, ProjectileType } from '../types';
+import { PlayerRole, Position, ProjectileType, TowerType } from '../types';
 import { CollisionSystem } from '../engine/CollisionSystem';
 import { SpaceSprites } from '../visuals/SpaceSprites';
 
@@ -11,6 +11,8 @@ export interface ProjectileData {
   slowFactor?: number;
   slowDuration?: number;
   level?: number;
+  ownerRole?: PlayerRole;
+  towerType?: TowerType;
 }
 
 export interface ProjectileOptions {
@@ -18,6 +20,9 @@ export interface ProjectileOptions {
   slowFactor?: number;
   slowDuration?: number;
   level?: number;
+  ownerRole?: PlayerRole;
+  towerType?: TowerType;
+  customId?: string;
 }
 
 export class Projectile extends BaseEntity {
@@ -27,7 +32,7 @@ export class Projectile extends BaseEntity {
 
   constructor(type: ProjectileType, x: number, y: number, targetX: number, targetY: number, damage: number, options?: ProjectileOptions) {
     // Store projectile position as top-left while x/y inputs are center points.
-    super(`proj_${type}_${Math.random().toString(36).substr(2, 9)}`, x - 8, y - 8, 16, 16);
+    super(options?.customId || `proj_${type}_${Math.random().toString(36).substr(2, 9)}`, x - 8, y - 8, 16, 16);
 
     const dx = targetX - x;
     const dy = targetY - y;
@@ -41,6 +46,8 @@ export class Projectile extends BaseEntity {
       slowFactor: options?.slowFactor ?? (type === 'ice' ? 0.5 : undefined),
       slowDuration: options?.slowDuration ?? (type === 'ice' ? 2 : undefined),
       level: options?.level ?? 1,
+      ownerRole: options?.ownerRole,
+      towerType: options?.towerType,
     };
 
     this.direction = { x: dx / dist, y: dy / dist };
