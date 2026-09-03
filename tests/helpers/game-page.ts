@@ -13,7 +13,7 @@ export class TowerDefencePage {
     await this.page.goto('/');
     await expect(this.canvas).toBeVisible();
     // Wait for game initialization
-    await this.page.waitForFunction(() => (window as any).game !== undefined);
+    await this.page.waitForFunction(() => (window as any).uiManager !== undefined);
   }
 
   async clickCanvasAt(x: number, y: number) {

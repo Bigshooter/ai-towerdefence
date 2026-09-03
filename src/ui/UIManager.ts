@@ -1,4 +1,4 @@
-import { DifficultyMode, GameState, TowerType } from '../types';
+import { DifficultyMode, GameData, GameState, TowerType } from '../types';
 import { SpaceSprites } from '../visuals/SpaceSprites';
 
 export class UIManager {
@@ -234,6 +234,10 @@ export class UIManager {
     return this.selectedTowerId;
   }
 
+  setSelectedTower(id: string | null): void {
+    this.selectedTowerId = id;
+  }
+
   getShowSettings(): boolean {
     return this.showSettings;
   }
@@ -277,6 +281,7 @@ export class UIManager {
   onSetSfxVolume?: (v: number) => void;
   onGetVolumes?: () => { music: number; sfx: number };
   onPreviewSfx?: () => void;
+  onGetGameData?: () => GameData;
 
   // ---- Settings panel geometry & interaction ----
 
@@ -1093,7 +1098,7 @@ export class UIManager {
   }
 
   // Data getters for rendering
-  getGold(): number { return (window as any).gameData?.gold ?? 0; }
-  getLives(): number { return (window as any).gameData?.lives ?? 0; }
-  getWave(): number { return (window as any).gameData?.wave ?? 1; }
+  getGold(): number { return this.onGetGameData?.().gold ?? 0; }
+  getLives(): number { return this.onGetGameData?.().lives ?? 0; }
+  getWave(): number { return this.onGetGameData?.().wave ?? 1; }
 }

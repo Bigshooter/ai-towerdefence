@@ -12,13 +12,18 @@ export interface ProjectileData {
   slowDuration?: number;
 }
 
+export interface ProjectileOptions {
+  splashRadius?: number;
+  slowFactor?: number;
+  slowDuration?: number;
+}
+
 export class Projectile extends BaseEntity {
   data: ProjectileData;
-  targetId: string | null;
   direction: Position;
   private trailTimer: number = 0;
 
-  constructor(type: ProjectileType, x: number, y: number, targetX: number, targetY: number, damage: number) {
+  constructor(type: ProjectileType, x: number, y: number, targetX: number, targetY: number, damage: number, options?: ProjectileOptions) {
     // Store projectile position as top-left while x/y inputs are center points.
     super(`proj_${type}_${Math.random().toString(36).substr(2, 9)}`, x - 8, y - 8, 16, 16);
 
@@ -30,13 +35,12 @@ export class Projectile extends BaseEntity {
       type,
       damage,
       speed: type === 'laser' ? 800 : type === 'ice' ? 200 : type === 'cannonball' ? 150 : type === 'flame' ? 260 : 300,
-      splashRadius: type === 'cannonball' ? 40 : undefined,
-      slowFactor: type === 'ice' ? 0.5 : undefined,
-      slowDuration: type === 'ice' ? 2 : undefined,
+      splashRadius: options?.splashRadius ?? (type === 'cannonball' ? 40 : undefined),
+      slowFactor: options?.slowFactor ?? (type === 'ice' ? 0.5 : undefined),
+      slowDuration: options?.slowDuration ?? (type === 'ice' ? 2 : undefined),
     };
 
     this.direction = { x: dx / dist, y: dy / dist };
-    this.targetId = null; // Will be resolved on update
   }
 
   update(dt: number): void {

@@ -1,9 +1,8 @@
 import { GameLoop } from './engine/GameLoop';
-import { EntityManager } from './engine/EntityManager';
 import { CollisionSystem } from './engine/CollisionSystem';
 import { TileMap } from './map/TileMap';
-import { Enemy, EnemyData } from './entities/Enemy';
-import { Tower } from './entities/Tower';
+import { Enemy } from './entities/Enemy';
+import { Tower, TOWER_STATS } from './entities/Tower';
 import { Projectile } from './entities/Projectile';
 import { WaveSystem } from './system/WaveSystem';
 import { EconomySystem } from './system/EconomySystem';
@@ -11,7 +10,7 @@ import { UpgradeOption, UpgradeSystem } from './system/UpgradeSystem';
 import { HealthSystem } from './system/HealthSystem';
 import { UIManager } from './ui/UIManager';
 import { AudioManager } from './audio/AudioManager';
-import { DifficultyMode, GameState, EnemyType, TowerType, Position } from './types';
+import { DifficultyMode, GameState, EnemyType, TowerType, Position, WaveConfig } from './types';
 
 interface GameData {
   lives: number;
@@ -24,7 +23,6 @@ class Game {
   private canvas: HTMLCanvasElement;
   private ctx: CanvasRenderingContext2D;
   private gameLoop!: GameLoop;
-  private entityManager = new EntityManager();
   private tileMap = new TileMap();
   private waveSystem = new WaveSystem();
   private economySystem = new EconomySystem(150);
@@ -43,14 +41,9 @@ class Game {
 
   // Wave tracking
   private waypoints: Position[] = [];
-  private waveCompleteTimer: number = 0;
   private wavePauseDuration: number = 3;
-  private enemiesRemaining: number = 0;
-  private spawningComplete: boolean = false;
-  private spawnQueue: EnemyType[] = [];
-  private spawnTimer: number = 0;
-  private currentSpawnInterval: number = 1;
-  private interWaveTimer: number = 0;
+  private bannerTimer: number = 0;
+  private bannerWave: number = 0;
   private difficultyMode: DifficultyMode = 'easy';
   private difficultyHpMultiplier: number = 1;
 
@@ -84,16 +77,10 @@ class Game {
     );
     this.gameLoop.start();
 
-    // Set global state reference for enemy HP scaling
-    (window as any).gameState = {
-      wave: 1,
-      difficulty: this.difficultyMode,
-      difficultyHpMultiplier: this.difficultyHpMultiplier,
-    };
-    (window as any).gameData = this.gameData;
+    // Test hooks; gameData is mutated in place so the reference stays live
     (window as any).game = this;
+    (window as any).gameData = this.gameData;
     (window as any).uiManager = this.uiManager;
-    (window as any).audioManager = this.audioManager;
   }
 
   private setupUICallbacks(): void {
@@ -156,6 +143,8 @@ class Game {
     this.uiManager.onPreviewSfx = () => {
       this.audioManager.playSFX('click');
     };
+
+    this.uiManager.onGetGameData = () => this.gameData;
   }
 
   private fmtStat(value: number): string {
@@ -198,29 +187,19 @@ class Game {
     // Reset game state
     this.gameState = 'playing';
     this.uiManager.setGameState('playing');
-    this.gameData = { lives: 20, gold: 150, wave: 1, score: 0 };
+    Object.assign(this.gameData, { lives: 20, gold: 150, wave: 1, score: 0 });
     this.enemies = [];
     this.towers = [];
     this.projectiles = [];
     this.effects = [];
-    this.entityManager = new EntityManager();
     this.waveSystem = new WaveSystem();
     this.economySystem = new EconomySystem(150);
     this.healthSystem = new HealthSystem(20, 20);
+    this.bannerTimer = 0;
 
-    // Reset wave scheduling. All wave timing is advanced by update(dt) so it
+    // Brief delay before the first wave; timing advances via update(dt) so it
     // pauses and resumes correctly with the game state.
-    this.spawnQueue = [];
-    this.spawnTimer = 0;
-    this.spawningComplete = false;
-    this.interWaveTimer = 1; // brief delay before the first wave
-
-    // Keep global state in sync for enemy regeneration max HP calculations.
-    (window as any).gameState = {
-      wave: this.gameData.wave,
-      difficulty: this.difficultyMode,
-      difficultyHpMultiplier: this.difficultyHpMultiplier,
-    };
+    this.waveSystem.scheduleWave(1, 1);
 
     // Start BGM
     this.audioManager.startBGM();
@@ -242,50 +221,28 @@ class Game {
     this.gameState = 'menu';
     this.uiManager.setGameState('menu');
 
-    this.gameData = { lives: 20, gold: 150, wave: 1, score: 0 };
+    Object.assign(this.gameData, { lives: 20, gold: 150, wave: 1, score: 0 });
     this.enemies = [];
     this.towers = [];
     this.projectiles = [];
     this.effects = [];
-    this.entityManager = new EntityManager();
     this.waveSystem = new WaveSystem();
     this.economySystem = new EconomySystem(150);
     this.healthSystem = new HealthSystem(20, 20);
-
-    this.spawnQueue = [];
-    this.spawnTimer = 0;
-    this.spawningComplete = false;
-    this.interWaveTimer = 0;
-    this.waveCompleteTimer = 0;
+    this.bannerTimer = 0;
 
     this.audioManager.stopBGM();
-
-    (window as any).gameState = {
-      wave: this.gameData.wave,
-      difficulty: this.difficultyMode,
-      difficultyHpMultiplier: this.difficultyHpMultiplier,
-    };
-    (window as any).gameData = this.gameData;
   }
 
-  private startNextWave(): void {
-    const waveConfig = this.waveSystem.generateWave(this.gameData.wave);
-
-    if (waveConfig.bossWave) {
+  private onWaveStarted(config: WaveConfig): void {
+    if (config.bossWave) {
       this.audioManager.playSFX('bossSpawn');
     } else {
       this.audioManager.playSFX('waveStart');
     }
 
     // Update BGM to match the new wave's intensity and character
-    this.audioManager.startBGM({ waveNumber: this.gameData.wave, bossWave: waveConfig.bossWave });
-
-    // Queue the wave's enemies; spawning is advanced by update(dt).
-    this.spawnQueue = [...waveConfig.enemies];
-    this.enemiesRemaining = waveConfig.enemies.length;
-    this.currentSpawnInterval = waveConfig.spawnInterval;
-    this.spawnTimer = 0;
-    this.spawningComplete = false;
+    this.audioManager.startBGM({ waveNumber: config.waveNumber, bossWave: config.bossWave });
   }
 
   private spawnEnemy(type: EnemyType): void {
@@ -294,7 +251,6 @@ class Game {
     const waveHpMultiplier = 1 + (this.gameData.wave - 1) * 0.15;
     const enemy = new Enemy(type, 0, this.waypoints, waveHpMultiplier * this.difficultyHpMultiplier);
     this.enemies.push(enemy);
-    this.entityManager.add(enemy);
   }
 
   private placeTower(type: string, col: number, row: number): boolean {
@@ -318,20 +274,11 @@ class Game {
     );
     if (existingTower) return false;
 
-    // Get tower stats and cost
-    const towerStats: Record<TowerType, { damage: number; range: number; fireRate: number; cost: number }> = {
-      archer: { damage: 10, range: 120, fireRate: 2.5, cost: 50 },
-      cannon: { damage: 30, range: 100, fireRate: 0.8, cost: 100 },
-      sniper: { damage: 50, range: 200, fireRate: 0.5, cost: 150 },
-      ice: { damage: 5, range: 90, fireRate: 1.5, cost: 75 },
-      flamethrower: { damage: 100, range: 100, fireRate: 1.2, cost: 250 },
-    };
-
-    const stats = towerStats[towerType];
+    // Get tower stats and cost from the single stats definition
+    const stats = TOWER_STATS[towerType];
     if (!stats) return false;
 
-    // Check if player has enough gold
-    if (this.gameData.gold < stats.cost) {
+    if (!this.economySystem.spendGold(stats.cost)) {
       this.audioManager.playSFX('click'); // Error sound
       return false;
     }
@@ -339,11 +286,7 @@ class Game {
     // Create and place tower
     const tower = new Tower(towerType, x, y);
     this.towers.push(tower);
-    this.entityManager.add(tower);
-    
-    // Deduct gold
-    this.gameData.gold -= stats.cost;
-    this.economySystem.setGold(this.gameData.gold);
+    this.syncGold();
     this.audioManager.playSFX('click');
 
     return true;
@@ -355,11 +298,7 @@ class Game {
       Math.floor(t.centerX / 32) === col && Math.floor(t.centerY / 32) === row
     );
 
-    if (selectedTower) {
-      this.uiManager['selectedTowerId'] = selectedTower.id;
-    } else {
-      this.uiManager['selectedTowerId'] = null;
-    }
+    this.uiManager.setSelectedTower(selectedTower ? selectedTower.id : null);
   }
 
   private upgradeSelectedTower(): void {
@@ -377,9 +316,8 @@ class Game {
     // Use current upgrade option for the tower
     const option = options[0];
 
-    if (this.gameData.gold >= option.cost) {
-      this.gameData.gold -= option.cost;
-      this.economySystem.setGold(this.gameData.gold);
+    if (this.economySystem.spendGold(option.cost)) {
+      this.syncGold();
       option.apply(tower);
       tower.data.level++;
       this.audioManager.playSFX('click');
@@ -398,44 +336,27 @@ class Game {
     
     // Remove tower
     this.towers.splice(towerIndex, 1);
-    this.entityManager.remove(towerId);
-    
+
     // Add gold
-    this.gameData.gold += sellValue;
-    this.economySystem.setGold(this.gameData.gold);
-    this.uiManager['selectedTowerId'] = null;
+    this.economySystem.addGold(sellValue);
+    this.syncGold();
+    this.uiManager.setSelectedTower(null);
     this.audioManager.playSFX('click');
   }
 
   private update(dt: number): void {
     if (this.gameState !== 'playing') return;
 
-    // Update economy with periodic passive income
-    const income = this.economySystem.update(dt);
-    if (income > 0) {
-      this.gameData.gold += income;
-    }
+    // Periodic passive income accrues inside the economy system
+    this.economySystem.update(dt);
 
-    // Advance the between-wave countdown, then start the next wave
-    if (this.interWaveTimer > 0) {
-      this.interWaveTimer -= dt;
-      if (this.interWaveTimer <= 0) {
-        this.interWaveTimer = 0;
-        this.startNextWave();
-      }
+    // Advance wave scheduling and spawning
+    const waveEvents = this.waveSystem.update(dt, this.enemies.length);
+    if (waveEvents.waveStarted) {
+      this.onWaveStarted(waveEvents.waveStarted);
     }
-
-    // Spawn queued enemies at the wave's spawn interval
-    if (this.spawnQueue.length > 0) {
-      this.spawnTimer += dt;
-      if (this.spawnTimer >= this.currentSpawnInterval) {
-        this.spawnTimer -= this.currentSpawnInterval;
-        const type = this.spawnQueue.shift()!;
-        this.spawnEnemy(type);
-        if (this.spawnQueue.length === 0) {
-          this.spawningComplete = true;
-        }
-      }
+    if (waveEvents.spawned) {
+      this.spawnEnemy(waveEvents.spawned);
     }
 
     // Update enemies
@@ -488,9 +409,9 @@ class Game {
           
           // Check if enemy died
           if (!enemy.alive) {
-            this.gameData.gold += enemy.data.reward;
+            this.economySystem.addGold(enemy.data.reward);
             this.gameData.score += enemy.data.reward * 10;
-            this.addEffect('death', enemy.position.x, enemy.position.y);
+            this.addEffect('death', enemy.position.x, enemy.position.y, `+${enemy.data.reward}`);
             this.audioManager.playSFX('kill');
           } else {
             this.audioManager.playSFX('hit');
@@ -514,12 +435,6 @@ class Game {
           projectile.kill();
         }
       }
-
-      // Remove off-screen projectiles
-      if (projectile.position.x < -50 || projectile.position.x > 1330 || 
-          projectile.position.y < -50 || projectile.position.y > 1010) {
-        projectile.kill();
-      }
     }
 
     // Update effects
@@ -528,22 +443,19 @@ class Game {
     }
 
     // Clean up dead entities
-    this.entityManager.cleanup();
     this.enemies = this.enemies.filter(e => e.alive);
     this.projectiles = this.projectiles.filter(p => p.alive);
     this.effects = this.effects.filter(e => e.alive);
 
-    // Detect wave completion: all enemies spawned and none remain alive
-    if (this.spawningComplete && this.enemies.length === 0) {
-      this.spawningComplete = false;
+    if (waveEvents.waveComplete) {
       this.handleWaveComplete();
     }
 
-    // Update global state references
-    (window as any).gameState.wave = this.gameData.wave;
-    (window as any).gameState.difficulty = this.difficultyMode;
-    (window as any).gameState.difficultyHpMultiplier = this.difficultyHpMultiplier;
-    (window as any).gameData = this.gameData;
+    if (this.bannerTimer > 0) {
+      this.bannerTimer = Math.max(0, this.bannerTimer - dt);
+    }
+
+    this.syncGold();
   }
 
   private fireProjectile(tower: Tower, target: Enemy): void {
@@ -558,11 +470,15 @@ class Game {
       tower.centerY,
       target.position.x + target.size.width / 2,
       target.position.y + target.size.height / 2,
-      tower.data.damage
+      tower.data.damage,
+      {
+        splashRadius: tower.data.splashRadius,
+        slowFactor: tower.data.slowFactor,
+        slowDuration: tower.data.slowDuration,
+      }
     );
 
     this.projectiles.push(projectile);
-    this.entityManager.add(projectile);
     
     if (projectileType !== 'laser') {
       this.audioManager.playSFX('shoot');
@@ -570,16 +486,22 @@ class Game {
   }
 
   private handleWaveComplete(): void {
-    this.waveCompleteTimer = 0;
-
     // Bonus gold for completing wave
     const bonusGold = 20 + this.gameData.wave * 5;
-    this.gameData.gold += bonusGold;
-    this.economySystem.setGold(this.gameData.gold);
+    this.economySystem.addGold(bonusGold);
+    this.syncGold();
+
+    // Banner shows the wave that was just cleared
+    this.bannerWave = this.gameData.wave;
+    this.bannerTimer = 2;
 
     // Advance to the next wave after a pause (countdown driven by update(dt))
     this.gameData.wave++;
-    this.interWaveTimer = this.wavePauseDuration;
+    this.waveSystem.scheduleWave(this.gameData.wave, this.wavePauseDuration);
+  }
+
+  private syncGold(): void {
+    this.gameData.gold = this.economySystem.getGold();
   }
 
   private gameOver(): void {
@@ -589,10 +511,8 @@ class Game {
     this.audioManager.playSFX('gameOver');
   }
 
-  private addEffect(type: string, x: number, y: number): void {
-    const effect = new Effect(type, x, y);
-    this.effects.push(effect);
-    this.entityManager.add(effect);
+  private addEffect(type: string, x: number, y: number, label?: string): void {
+    this.effects.push(new Effect(type, x, y, label));
   }
 
   private render(): void {
@@ -644,13 +564,13 @@ class Game {
     // Render UI overlay
     this.uiManager.render(this.ctx);
 
-    // Draw wave announcement
-    if (this.waveCompleteTimer > 0 && this.waveCompleteTimer < 2) {
-      const alpha = 1 - (this.waveCompleteTimer / 2);
+    // Draw wave announcement (fades out as the timer runs down)
+    if (this.bannerTimer > 0) {
+      const alpha = this.bannerTimer / 2;
       this.ctx.fillStyle = `rgba(255, 215, 0, ${alpha})`;
       this.ctx.font = 'bold 32px monospace';
       this.ctx.textAlign = 'center';
-      this.ctx.fillText(`Wave ${this.gameData.wave} Complete!`, this.canvas.width / 2, this.canvas.height / 2);
+      this.ctx.fillText(`Wave ${this.bannerWave} Complete!`, this.canvas.width / 2, this.canvas.height / 2);
       this.ctx.textAlign = 'left';
     }
 
@@ -727,12 +647,14 @@ class Effect {
   size = { width: 0, height: 0 };
   alive: boolean = true;
   private type: string;
+  private label: string;
   private timer: number = 0;
   private duration: number;
 
-  constructor(type: string, x: number, y: number) {
+  constructor(type: string, x: number, y: number, label: string = '') {
     this.id = `effect_${type}_${Math.random().toString(36).substr(2, 9)}`;
     this.type = type;
+    this.label = label;
     this.position = { x, y };
     
     switch (type) {
@@ -772,11 +694,13 @@ class Effect {
       case 'death':
         // Gold text floating up
         const yOffset = -progress * 30;
-        ctx.fillStyle = `rgba(255, 215, 0, ${1 - progress})`;
-        ctx.font = 'bold 14px monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText('+10', this.position.x, this.position.y + yOffset);
-        ctx.textAlign = 'left';
+        if (this.label) {
+          ctx.fillStyle = `rgba(255, 215, 0, ${1 - progress})`;
+          ctx.font = 'bold 14px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(this.label, this.position.x, this.position.y + yOffset);
+          ctx.textAlign = 'left';
+        }
         
         // Dust cloud
         for (let i = 0; i < 5; i++) {
