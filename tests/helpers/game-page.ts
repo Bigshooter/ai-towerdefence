@@ -68,6 +68,19 @@ export class TowerDefencePage {
     await this.clickCanvasAt(coords[mode].x, coords[mode].y);
   }
 
+  async clickMapDropdown() {
+    await this.clickCanvasAt(795, 920);
+  }
+
+  async selectMapOption(map: 'space' | 'dungeon' | 'military') {
+    const coords = {
+      space: { x: 916, y: 920 },
+      dungeon: { x: 992, y: 920 },
+      military: { x: 1068, y: 920 },
+    };
+    await this.clickCanvasAt(coords[map].x, coords[map].y);
+  }
+
   async selectTowerTypeButton(index: 0 | 1 | 2 | 3 | 4) {
     // 0: Archer (80), 1: Cannon (150), 2: Sniper (220), 3: Ice (290), 4: Flame (360)
     const x = 80 + index * 70;
@@ -81,11 +94,25 @@ export class TowerDefencePage {
   }
 
   async clickUpgradeButton() {
-    await this.clickCanvasAt(380, 920);
+    const layout = await this.page.evaluate(() => {
+      const um = (window as any).uiManager;
+      if (um && typeof um.getUpgradeButtonLayout === 'function') {
+        return um.getUpgradeButtonLayout();
+      }
+      return { upgradeX: 340, sellX: 430 };
+    });
+    await this.clickCanvasAt(layout.upgradeX + 40, 920);
   }
 
   async clickSellButton() {
-    await this.clickCanvasAt(470, 920);
+    const layout = await this.page.evaluate(() => {
+      const um = (window as any).uiManager;
+      if (um && typeof um.getUpgradeButtonLayout === 'function') {
+        return um.getUpgradeButtonLayout();
+      }
+      return { upgradeX: 340, sellX: 430 };
+    });
+    await this.clickCanvasAt(layout.sellX + 40, 920);
   }
 
   async setMusicSlider(fraction: number) {
@@ -132,6 +159,14 @@ export class TowerDefencePage {
     return await this.page.evaluate(() => (window as any).uiManager?.getSelectedDifficulty?.() || (window as any).gameState?.difficulty);
   }
 
+  async isMapDropdownOpen(): Promise<boolean> {
+    return await this.page.evaluate(() => !!(window as any).uiManager?.getShowMapDropdown?.());
+  }
+
+  async getSelectedMap(): Promise<string> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getSelectedMap?.());
+  }
+
   async getSelectedTowerType(): Promise<string | null> {
     return await this.page.evaluate(() => (window as any).uiManager?.getSelectedTowerType?.());
   }
@@ -142,5 +177,103 @@ export class TowerDefencePage {
 
   async getTowersCount(): Promise<number> {
     return await this.page.evaluate(() => (window as any).game?.towers?.length || 0);
+  }
+
+  // --- High Score & Leaderboard Helpers ---
+
+  async clickLeaderboardHUDButton() {
+    await this.clickCanvasAt(1160, 25);
+  }
+
+  async clickGameOverLeaderboardButton() {
+    await this.clickCanvasAt(640, 580);
+  }
+
+  async clickLeaderboardClose() {
+    await this.clickCanvasAt(1030, 168);
+  }
+
+  async clickLeaderboardBottomClose() {
+    await this.clickCanvasAt(640, 784);
+  }
+
+  async selectLeaderboardTab(map: 'space' | 'dungeon' | 'military') {
+    const coords = {
+      space: { x: 418, y: 229 },
+      dungeon: { x: 640, y: 229 },
+      military: { x: 862, y: 229 },
+    };
+    await this.clickCanvasAt(coords[map].x, coords[map].y);
+  }
+
+  async clickHighScoreSubmit() {
+    await this.clickCanvasAt(578, 561);
+  }
+
+  async clickHighScoreBackspace() {
+    await this.clickCanvasAt(778, 561);
+  }
+
+  async clickHighScoreClose() {
+    await this.clickCanvasAt(902, 298);
+  }
+
+  async isHighScoreEntryOpen(): Promise<boolean> {
+    return await this.page.evaluate(() => !!(window as any).uiManager?.getShowHighScoreEntry?.());
+  }
+
+  async getHighScoreInput(): Promise<string> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getHighScoreInput?.() || '');
+  }
+
+  async setHighScoreInput(name: string): Promise<void> {
+    await this.page.evaluate((n) => (window as any).uiManager?.setHighScoreInput?.(n), name);
+  }
+
+  async isLeaderboardOpen(): Promise<boolean> {
+    return await this.page.evaluate(() => !!(window as any).uiManager?.getShowLeaderboardModal?.());
+  }
+
+  async getActiveLeaderboardTab(): Promise<string> {
+    return await this.page.evaluate(() => (window as any).uiManager?.getActiveLeaderboardTab?.() || '');
+  }
+
+  async getLeaderboardScores(map: 'space' | 'dungeon' | 'military'): Promise<any[]> {
+    return await this.page.evaluate((m) => (window as any).highScoreSystem?.getScores?.(m) || [], map);
+  }
+
+  async clearAllLeaderboards(): Promise<void> {
+    await this.page.evaluate(() => (window as any).highScoreSystem?.clearScores?.());
+  }
+
+  async getTowerAt(col: number, row: number): Promise<{ id: string; type: string; level: number } | null> {
+    return await this.page.evaluate(({ c, r }) => {
+      const towers = (window as any).game?.towers || [];
+      const x = c * 32;
+      const y = r * 32;
+      const found = towers.find((t: any) => {
+        const tx = Math.floor((t.position.x + 16) / 32);
+        const ty = Math.floor((t.position.y + 16) / 32);
+        return tx === c && ty === r;
+      });
+      if (!found) return null;
+      return {
+        id: found.id,
+        type: found.data.type,
+        level: found.data.level,
+      };
+    }, { c: col, r: row });
+  }
+
+  async getTowerCacheKeys(): Promise<string[]> {
+    return await this.page.evaluate(() => {
+      return (window as any).SpaceSprites?.getTowerCacheKeys?.() || [];
+    });
+  }
+
+  async getProjectileCacheKeys(): Promise<string[]> {
+    return await this.page.evaluate(() => {
+      return (window as any).SpaceSprites?.getProjectileCacheKeys?.() || [];
+    });
   }
 }

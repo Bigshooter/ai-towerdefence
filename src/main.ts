@@ -8,9 +8,11 @@ import { WaveSystem } from './system/WaveSystem';
 import { EconomySystem } from './system/EconomySystem';
 import { UpgradeOption, UpgradeSystem } from './system/UpgradeSystem';
 import { HealthSystem } from './system/HealthSystem';
+import { HighScoreSystem } from './system/HighScoreSystem';
 import { UIManager } from './ui/UIManager';
 import { AudioManager } from './audio/AudioManager';
-import { DifficultyMode, GameState, EnemyType, TowerType, Position, WaveConfig } from './types';
+import { SpaceSprites } from './visuals/SpaceSprites';
+import { DifficultyMode, GameState, EnemyType, MapType, TowerType, Position, WaveConfig } from './types';
 
 interface GameData {
   lives: number;
@@ -28,6 +30,7 @@ class Game {
   private economySystem = new EconomySystem(150);
   private upgradeSystem = new UpgradeSystem();
   private healthSystem = new HealthSystem(20, 20);
+  private highScoreSystem = new HighScoreSystem();
   private uiManager!: UIManager;
   private audioManager = new AudioManager();
 
@@ -81,6 +84,8 @@ class Game {
     (window as any).game = this;
     (window as any).gameData = this.gameData;
     (window as any).uiManager = this.uiManager;
+    (window as any).highScoreSystem = this.highScoreSystem;
+    (window as any).SpaceSprites = SpaceSprites;
   }
 
   private setupUICallbacks(): void {
@@ -119,8 +124,13 @@ class Game {
       return { level: tower.data.level, upgradeCost, sellValue, canUpgrade, upgradePreview };
     };
 
-    this.uiManager.onStartGame = (difficulty) => {
-      this.startNewGame(difficulty);
+    this.uiManager.onStartGame = (difficulty, mapType) => {
+      this.startNewGame(difficulty, mapType);
+    };
+
+    this.uiManager.onSelectMap = (mapType) => {
+      this.tileMap.setMap(mapType);
+      this.waypoints = this.tileMap.getWaypoints();
     };
 
     this.uiManager.onPauseGame = () => {
@@ -145,6 +155,30 @@ class Game {
     };
 
     this.uiManager.onGetGameData = () => this.gameData;
+
+    this.uiManager.onCheckHighScore = (score, map) => {
+      return this.highScoreSystem.isHighScore(map, score);
+    };
+
+    this.uiManager.onGetLeaderboard = (map) => {
+      return this.highScoreSystem.getScores(map);
+    };
+
+    this.uiManager.onSubmitHighScore = (name, score, wave, difficulty, map) => {
+      const entry = this.highScoreSystem.addScore(
+        map ?? this.tileMap.getMapType(),
+        name,
+        score ?? this.gameData.score,
+        wave ?? this.gameData.wave,
+        difficulty ?? this.difficultyMode
+      );
+      this.audioManager.playSFX('scoreSubmit');
+      return entry;
+    };
+
+    this.uiManager.onPreviewTypeKey = () => {
+      this.audioManager.playSFX('typeKey');
+    };
   }
 
   private fmtStat(value: number): string {
@@ -180,9 +214,12 @@ class Game {
     return 1;
   }
 
-  private startNewGame(difficulty: DifficultyMode = 'easy'): void {
+  private startNewGame(difficulty: DifficultyMode = 'easy', mapType: MapType = 'space'): void {
     this.difficultyMode = difficulty;
     this.difficultyHpMultiplier = this.getDifficultyHpMultiplier(difficulty);
+
+    this.tileMap.setMap(mapType);
+    this.waypoints = this.tileMap.getWaypoints();
 
     // Reset game state
     this.gameState = 'playing';
@@ -475,6 +512,7 @@ class Game {
         splashRadius: tower.data.splashRadius,
         slowFactor: tower.data.slowFactor,
         slowDuration: tower.data.slowDuration,
+        level: tower.data.level,
       }
     );
 
@@ -509,6 +547,18 @@ class Game {
     this.uiManager.setGameState('gameOver');
     this.audioManager.stopBGM();
     this.audioManager.playSFX('gameOver');
+
+    if (this.gameData.score > 0 && this.highScoreSystem.isHighScore(this.tileMap.getMapType(), this.gameData.score)) {
+      this.uiManager.openHighScoreEntry(
+        this.gameData.score,
+        this.gameData.wave,
+        this.difficultyMode,
+        this.tileMap.getMapType()
+      );
+      setTimeout(() => {
+        this.audioManager.playSFX('highScore');
+      }, 350);
+    }
   }
 
   private addEffect(type: string, x: number, y: number, label?: string): void {
@@ -634,9 +684,11 @@ class Game {
       this.ctx.textAlign = 'left';
     }
 
-    // Settings panel renders on top of everything else
+    // Settings, help, leaderboard, and high score modals render on top of everything else
     this.uiManager.renderHelp(this.ctx);
     this.uiManager.renderSettings(this.ctx);
+    this.uiManager.renderLeaderboardModal(this.ctx);
+    this.uiManager.renderHighScoreEntry(this.ctx);
   }
 }
 

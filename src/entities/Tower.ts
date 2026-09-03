@@ -93,11 +93,12 @@ export class Tower extends BaseEntity {
       this.animFrame,
       Boolean(this.data.targetId),
       Date.now() / 1000,
+      this.data.level,
     );
 
     // Level indicator
-    ctx.fillStyle = '#FFD700';
-    ctx.font = '10px monospace';
+    ctx.fillStyle = this.data.level >= 4 ? '#FFE57F' : this.data.level >= 2 ? '#58EAFF' : '#FFD700';
+    ctx.font = 'bold 10px monospace';
     ctx.fillText(`Lv.${this.data.level}`, x + 8, y - 4);
   }
 

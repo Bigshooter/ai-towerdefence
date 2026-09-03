@@ -10,12 +10,14 @@ export interface ProjectileData {
   splashRadius?: number;
   slowFactor?: number;
   slowDuration?: number;
+  level?: number;
 }
 
 export interface ProjectileOptions {
   splashRadius?: number;
   slowFactor?: number;
   slowDuration?: number;
+  level?: number;
 }
 
 export class Projectile extends BaseEntity {
@@ -38,6 +40,7 @@ export class Projectile extends BaseEntity {
       splashRadius: options?.splashRadius ?? (type === 'cannonball' ? 40 : undefined),
       slowFactor: options?.slowFactor ?? (type === 'ice' ? 0.5 : undefined),
       slowDuration: options?.slowDuration ?? (type === 'ice' ? 2 : undefined),
+      level: options?.level ?? 1,
     };
 
     this.direction = { x: dx / dist, y: dy / dist };
@@ -75,6 +78,7 @@ export class Projectile extends BaseEntity {
       this.direction.x,
       this.direction.y,
       Date.now() / 1000,
+      this.data.level ?? 1,
     );
   }
 

@@ -65,9 +65,31 @@ export type GameState = 'menu' | 'playing' | 'paused' | 'waveComplete' | 'gameOv
 
 export type DifficultyMode = 'easy' | 'medium' | 'hard';
 
+export type MapType = 'space' | 'dungeon' | 'military';
+
+export interface MapDefinition {
+  id: MapType;
+  name: string;
+  description: string;
+  backgroundColor: string;
+}
+
 export interface GameData {
   lives: number;
   gold: number;
   wave: number;
   score: number;
 }
+
+export interface HighScoreEntry {
+  id: string;
+  name: string; // 1-6 characters, uppercase alphanumeric
+  score: number;
+  wave: number;
+  difficulty: DifficultyMode;
+  mapType: MapType;
+  timestamp: number; // Unix epoch ms
+}
+
+export type Leaderboards = Record<MapType, HighScoreEntry[]>;
+

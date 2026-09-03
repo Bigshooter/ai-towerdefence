@@ -57,7 +57,7 @@ export class AudioManager {
       this.sfxGain.connect(this.audioContext.destination);
 
       this.musicGain = this.audioContext.createGain();
-      this.musicGain.gain.value = this.musicVolume * 0.2; // keep BGM low-key
+      this.musicGain.gain.value = this.musicVolume;
       this.musicGain.connect(this.audioContext.destination);
 
       // Music chain: instruments -> musicBus -> lowpass filter -> musicGain
@@ -101,7 +101,7 @@ export class AudioManager {
 
   setMusicVolume(v: number): void {
     this.musicVolume = Math.max(0, Math.min(1, v));
-    if (this.musicGain) this.musicGain.gain.value = this.musicVolume * 0.2;
+    if (this.musicGain) this.musicGain.gain.value = this.musicVolume;
     try { localStorage.setItem('td_musicVolume', String(this.musicVolume)); } catch { /* ignore */ }
   }
 
@@ -114,7 +114,7 @@ export class AudioManager {
   getMusicVolume(): number { return this.musicVolume; }
   getSfxVolume(): number { return this.sfxVolume; }
 
-  playSFX(type: 'shoot' | 'hit' | 'kill' | 'waveStart' | 'bossSpawn' | 'gameOver' | 'click'): void {
+  playSFX(type: 'shoot' | 'hit' | 'kill' | 'waveStart' | 'bossSpawn' | 'gameOver' | 'click' | 'highScore' | 'scoreSubmit' | 'typeKey'): void {
     if (!this.audioContext) return;
     if (this.audioContext.state === 'suspended') this.audioContext.resume();
 
@@ -148,6 +148,19 @@ export class AudioManager {
         break;
       case 'click':
         this.playTone(ctx, now, 800, 0.03, 'sine', 0.1);
+        break;
+      case 'typeKey':
+        this.playTone(ctx, now, 950, 0.02, 'sine', 0.05);
+        break;
+      case 'highScore':
+        this.playTone(ctx, now, 523.25, 0.09, 'triangle', 0.2); // C5
+        setTimeout(() => this.playTone(ctx, ctx.currentTime + 0.08, 659.25, 0.09, 'triangle', 0.2), 80); // E5
+        setTimeout(() => this.playTone(ctx, ctx.currentTime + 0.16, 783.99, 0.09, 'triangle', 0.2), 160); // G5
+        setTimeout(() => this.playTone(ctx, ctx.currentTime + 0.24, 1046.50, 0.22, 'triangle', 0.25), 240); // C6
+        break;
+      case 'scoreSubmit':
+        this.playTone(ctx, now, 880, 0.08, 'triangle', 0.2);
+        setTimeout(() => this.playTone(ctx, ctx.currentTime + 0.07, 1174.66, 0.18, 'triangle', 0.2), 70);
         break;
     }
   }
