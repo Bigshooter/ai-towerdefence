@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-**AI Tower Defence** is a modular, client-side tower defence game built with TypeScript, HTML5 2D Canvas, Vite, and the Web Audio API. The game features real-time pathfinding navigation, projectile physics, multi-tier tower upgrades, dynamic procedural synthwave music, procedural pixel-art rendering with offscreen canvas caching, and an immediate-mode UI system rendered entirely on canvas.
+**AI Tower Defence** is a modular, client-side tower defence game built with TypeScript, HTML5 2D Canvas, Vite, and the Web Audio API. It supports solo play and two-player cooperative play between browser contexts, fixed-waypoint enemy navigation, projectile combat, multi-tier tower upgrades, per-map persisted leaderboards, variable simulation speed, procedural synthwave music, cached procedural pixel art, and an immediate-mode UI rendered entirely on canvas.
 
 ```mermaid
 graph TD
@@ -25,6 +25,13 @@ graph TD
         EconSys[EconomySystem]
         HealthSys[HealthSystem]
         UpgradeSys[UpgradeSystem]
+      HighScoreSys[HighScoreSystem]
+      DamageSys[DamageCalculator]
+    end
+
+    subgraph Local Browser Services
+      Network[MultiplayerNetwork / BroadcastChannel]
+      Storage[localStorage]
     end
 
     subgraph World & Entities
@@ -45,6 +52,9 @@ graph TD
     Game -->|delegate rules| Subsystems
     Game -->|render UI & handle events| UIManager
     Game -->|trigger SFX & modulate BGM| AudioManager
+    Game -->|room events, player commands, snapshots| Network
+    HighScoreSys -->|leaderboards| Storage
+    UIManager -->|gamertag & volume settings| Storage
     World -->|AABB / radial collision| Collision
     World -->|procedural sprites| SpaceSprites
     UIManager -->|dispatch player actions| Game
@@ -55,7 +65,7 @@ graph TD
 
 ## 2. Technology Stack & Key Architectural Principles
 
-- **Language & Runtime:** TypeScript (strict type checking enabled in [tsconfig.json](tsconfig.json)), ES modules.
+- **Language & Runtime:** TypeScript (strict type checking enabled in [tsconfig.json](../tsconfig.json)), ES modules.
 - **Build & Development Tooling:** Vite for near-instant hot reloading and optimized rollup-based static production bundles.
 - **Rendering Engine:** Native HTML5 2D Canvas API ($1280 \times 960$ fixed logical resolution).
 - **Audio Engine:** Web Audio API procedural synthesis with custom subtractive oscillators, envelope shaping, noise buffers, and tempo-synced feedback delay lines.
@@ -64,10 +74,12 @@ graph TD
 ### Architectural Principles
 
 1. **Decoupled System Responsibilities:** Game rules (waves, economy, player health, upgrade formulas) are separated into specialized, testable system classes rather than monolithic state scripts.
-2. **Deterministic Delta-Time Clamping:** The core loop calculates delta time ($\Delta t$) with upper-bound clamping ($0.1\text{s}$) to prevent frame drops or background tab resumption from causing physics clipping or state explosions.
+2. **Bounded Variable-Speed Simulation:** The animation loop clamps real elapsed time to $0.1\text{s}$. `Game` then applies the selected $1\times$, $2\times$, $3\times$, or $5\times$ speed and subdivides simulation work into steps no larger than $0.033\text{s}$.
 3. **Procedural Vector Sprite Generation & Offscreen Caching:** Visual assets are generated dynamically using native canvas drawing paths and cached onto offscreen canvas buffers (`Map<string, HTMLCanvasElement>`) to maximize runtime framerates.
 4. **Immediate-Mode Canvas UI:** The user interface (HUD, toolbars, modal dialogs, interactive sliders, tower inspectors) is rendered directly in the game's render loop, using event listeners mapped to canvas logical coordinates.
-5. **Single Source of Truth:** Systems like [EconomySystem](src/system/EconomySystem.ts) and [HealthSystem](src/system/HealthSystem.ts) encapsulate their values, synchronized to game data objects and test hooks.
+5. **System-Owned State:** [EconomySystem](../src/system/EconomySystem.ts), [HealthSystem](../src/system/HealthSystem.ts), [HighScoreSystem](../src/system/HighScoreSystem.ts), and [DamageCalculator](../src/system/DamageCalculator.ts) own their respective state. `Game` projects that state into the canvas UI and live test hooks.
+6. **Host-Authoritative Cooperative Play:** Player commands are exchanged through `BroadcastChannel`, while player 1 runs combat and periodically publishes complete entity/economy/stat snapshots. Player 2 reconciles those snapshots and does not run a competing simulation.
+7. **Browser-Local Persistence and Networking:** Scores, gamertags, and audio settings use `localStorage`; room discovery and gameplay messages use `BroadcastChannel`. There is no remote server, account service, or cross-device transport.
 
 ---
 
@@ -75,22 +87,24 @@ graph TD
 
 ### 3.1. Main Orchestration (`Game`)
 
-Located in [src/main.ts](src/main.ts), the `Game` class acts as the central coordinator:
-- Owns the instances of [GameLoop](src/engine/GameLoop.ts), [TileMap](src/map/TileMap.ts), [UIManager](src/ui/UIManager.ts), [AudioManager](src/audio/AudioManager.ts), and all rule systems.
+Located in [src/main.ts](../src/main.ts), the `Game` class acts as the central coordinator:
+- Owns [GameLoop](../src/engine/GameLoop.ts), [TileMap](../src/map/TileMap.ts), [UIManager](../src/ui/UIManager.ts), [AudioManager](../src/audio/AudioManager.ts), [MultiplayerNetwork](../src/network/MultiplayerNetwork.ts), and all rule systems.
 - Manages the primary game state machine: `'menu'`, `'playing'`, `'paused'`, `'waveComplete'`, and `'gameOver'`.
+- Selects solo or multiplayer orchestration, applies game speed, and runs fixed-size simulation substeps.
 - Runs the top-level tick orchestration (`update(dt)` and `render()`).
 - Coordinates entity creation, firing projectiles, handling damage resolution, cleaning up dead entities, and awarding gold/score.
-- Exposes window-level test hooks (`(window as any).game`, `gameData`, `uiManager`, `SpaceSprites`) for automated Playwright E2E suites.
+- In multiplayer, applies remote player commands, owns host snapshots, and reconciles guest state.
+- Exposes window-level test hooks (`game`, `gameData`, `uiManager`, `highScoreSystem`, `damageCalculator`, `network`, and `SpaceSprites`) for Playwright suites.
 
 ---
 
 ### 3.2. Engine Layer
 
-- **[GameLoop](src/engine/GameLoop.ts):**
+- **[GameLoop](../src/engine/GameLoop.ts):**
   - Manages `requestAnimationFrame` lifecycle.
   - Computes $\Delta t = \min((t_{\text{current}} - t_{\text{last}})/1000, 0.1)$.
   - Executes decoupled `update(dt)` and `render()` callbacks.
-- **[CollisionSystem](src/engine/CollisionSystem.ts):**
+- **[CollisionSystem](../src/engine/CollisionSystem.ts):**
   - Static mathematical and geometric utility library.
   - Methods:
     - `checkOverlap(a, b)`: Axis-Aligned Bounding Box (AABB) intersection.
@@ -102,7 +116,7 @@ Located in [src/main.ts](src/main.ts), the `Game` class acts as the central coor
 
 ### 3.3. Entity Hierarchy
 
-All active world elements inherit from the abstract base class [BaseEntity](src/entities/BaseEntity.ts):
+All active world elements inherit from the abstract base class [BaseEntity](../src/entities/BaseEntity.ts):
 
 ```mermaid
 classDiagram
@@ -121,6 +135,7 @@ classDiagram
 
     class Tower {
         +TowerData data
+      +PlayerRole ownerRole
         +findTarget(enemies) string?
         +getUpgradeCost() number
         +update(dt) void
@@ -138,6 +153,8 @@ classDiagram
 
     class Projectile {
         +ProjectileData data
+      +PlayerRole ownerRole
+      +TowerType towerType
         +Position direction
         +checkCollision(enemies) HitResult
         +update(dt) void
@@ -151,20 +168,22 @@ classDiagram
 
 #### Entity Details
 
-- **[Tower](src/entities/Tower.ts):**
+- **[Tower](../src/entities/Tower.ts):**
   - Configured by tower type: `'archer'`, `'cannon'`, `'sniper'`, `'ice'`, `'flamethrower'`.
   - Maintains firing cooldown, targeting logic (closest enemy within radius), and level ($1$ to $5$).
   - Evaluates upgrade cost: $\lfloor \text{cost} \times (0.5 + \text{level} \times 0.3) \rfloor$.
-  - Dispatches rendering to [SpaceSprites](src/visuals/SpaceSprites.ts) with level-tier visual progression and animated barrels/cooling vents.
-- **[Enemy](src/entities/Enemy.ts):**
+  - Carries optional owner role/tag metadata in cooperative games; only the owner can upgrade or sell it.
+  - Dispatches rendering to [SpaceSprites](../src/visuals/SpaceSprites.ts) with level-tier visual progression and animated barrels/cooling vents.
+- **[Enemy](../src/entities/Enemy.ts):**
   - Configured by enemy archetype: `'normal'`, `'speed'`, `'armored'`, `'regenerating'`, `'boss'`.
   - Follows tilemap waypoints using vector interpolation.
   - Supports armor mitigation ($\text{damage} - \text{armor}$), health regeneration per second, and temporary slow modifiers.
   - Scales hit points based on wave number and difficulty mode.
-- **[Projectile](src/entities/Projectile.ts):**
+- **[Projectile](../src/entities/Projectile.ts):**
   - Configured by projectile archetype: `'arrow'`, `'cannonball'`, `'laser'`, `'ice'`, `'flame'`.
   - Travels along normalized directional unit vectors.
   - Carries payload metadata: single-target damage, area-of-effect splash radius, and slow parameters.
+  - Propagates tower owner and tower type so damage and kills can be attributed to the correct player.
   - Automatically kills itself when moving out of world bounds or striking targets.
 
 ---
@@ -173,16 +192,31 @@ classDiagram
 
 | System | File | Key Responsibilities |
 |---|---|---|
-| **EconomySystem** | [src/system/EconomySystem.ts](src/system/EconomySystem.ts) | Tracks player gold, handles spending/crediting transactions, and generates passive income at fixed 10-second intervals ($+10$ gold). |
-| **HealthSystem** | [src/system/HealthSystem.ts](src/system/HealthSystem.ts) | Tracks player lives (default: 20), decrements lives when enemies reach the exit waypoint, triggers game over callbacks. |
-| **UpgradeSystem** | [src/system/UpgradeSystem.ts](src/system/UpgradeSystem.ts) | Computes contextual upgrade paths for towers (archetype special abilities at levels 2 & 3, linear stat scaling up to level 5) and computes tower sell refund values ($60\%$ base cost $\times$ level). |
-| **WaveSystem** | [src/system/WaveSystem.ts](src/system/WaveSystem.ts) | Generates procedural wave rosters, schedules inter-wave pauses, streams enemy spawns via timer queues, handles boss waves (every 5th wave), and emits wave completion signals. |
+| **EconomySystem** | [src/system/EconomySystem.ts](../src/system/EconomySystem.ts) | Owns the solo wallet or independent P1/P2 wallets. Cooperative rewards are split evenly, odd remainders alternate between players, and each 10-second passive-income payment is split $5/5$. |
+| **HealthSystem** | [src/system/HealthSystem.ts](../src/system/HealthSystem.ts) | Tracks the shared life pool (default: 20), decrements lives when enemies reach the exit waypoint, and reports game-over state. |
+| **UpgradeSystem** | [src/system/UpgradeSystem.ts](../src/system/UpgradeSystem.ts) | Computes contextual upgrade paths, stat scaling up to level 5, and tower sell refunds. |
+| **WaveSystem** | [src/system/WaveSystem.ts](../src/system/WaveSystem.ts) | Uses a seedable linear congruential PRNG to generate wave rosters, schedules inter-wave pauses, streams spawns, handles every-fifth-wave bosses, and emits completion signals. |
+| **HighScoreSystem** | [src/system/HighScoreSystem.ts](../src/system/HighScoreSystem.ts) | Validates and persists the top 10 entries for each map under `td_highscores`, including score, wave, difficulty, and timestamp. |
+| **DamageCalculator** | [src/system/DamageCalculator.ts](../src/system/DamageCalculator.ts) | Tracks per-player total/wave damage, kills, tower-type breakdowns, contribution percentages, and the current wave leader. |
 
 ---
 
-### 3.5. World & Map Representation (`TileMap`)
+### 3.5. Cooperative Multiplayer (`MultiplayerNetwork`)
 
-Located in [src/map/TileMap.ts](src/map/TileMap.ts):
+[MultiplayerNetwork](../src/network/MultiplayerNetwork.ts) wraps the browser `BroadcastChannel` API using the `td_multiplayer_channel` channel:
+- Hosts announce rooms; guests query or join by room code; both players ready before a host-driven launch countdown.
+- Placement, upgrade, sell, wave-start, pause, speed, cursor, and tile-ping commands are broadcast as typed `NetworkMessage` values.
+- P1 is authoritative for waves, enemies, projectiles, collision, health, score, wallets, and combat statistics.
+- After each host update, a `HOST_SNAPSHOT` publishes those values plus entity snapshots. P2 creates or updates local render entities by stable IDs and does not advance combat locally.
+- A shared seed makes host-generated cooperative wave configurations reproducible; the host also includes each generated configuration in `START_WAVE` messages.
+
+This transport is intentionally limited to browsing contexts on the same origin/device. It does not provide internet matchmaking, durable rooms, authentication, reconnection, or adversarial validation.
+
+---
+
+### 3.6. World & Map Representation (`TileMap`)
+
+Located in [src/map/TileMap.ts](../src/map/TileMap.ts):
 - Manages a $40 \times 30$ tile grid ($1280 \times 960$ px total, $32 \times 32$ px per tile).
 - Supports three distinct map environments:
   1. **Space Station (`space`):** Orbital conduits with a serpentine path across galactic starfields.
@@ -194,9 +228,9 @@ Located in [src/map/TileMap.ts](src/map/TileMap.ts):
 
 ---
 
-### 3.6. Visual Presentation & Procedural Sprites (`SpaceSprites`)
+### 3.7. Visual Presentation & Procedural Sprites (`SpaceSprites`)
 
-Located in [src/visuals/SpaceSprites.ts](src/visuals/SpaceSprites.ts):
+Located in [src/visuals/SpaceSprites.ts](../src/visuals/SpaceSprites.ts):
 - Eliminates external static image dependencies by drawing high-definition pixel-art vector sprites procedurally using Canvas 2D primitives.
 - **Sprite Caching Architecture:**
   - Offscreen canvas caches indexed by unique composite keys (`mapType:tileType:variant:mask`, `towerType:level`, `projectileType:level`).
@@ -209,21 +243,22 @@ Located in [src/visuals/SpaceSprites.ts](src/visuals/SpaceSprites.ts):
 
 ---
 
-### 3.7. User Interface (`UIManager`)
+### 3.8. User Interface (`UIManager`)
 
-Located in [src/ui/UIManager.ts](src/ui/UIManager.ts):
+Located in [src/ui/UIManager.ts](../src/ui/UIManager.ts):
 - Renders an immediate-mode GUI layered above the gameplay canvas:
-  - **Top Bar (HUD):** Wave counter, player lives indicator, gold balance, score display, and settings button.
+  - **Top Bar (HUD):** Wave, shared lives, local gold, score, game-speed control, leaderboard access, settings, and cooperative contribution indicators.
   - **Bottom Bar (Action Dock):** Tower purchase shop with cost badges, lock state badges (e.g. Flamethrower unlocking at wave 25), and quick hotkeys (`1`-`5`).
   - **Tower Inspector Card:** Displays selected tower details, stats, upgrade preview badges (`DMG +2.0`, `SPLASH +30%`), upgrade cost buttons, and sell refund actions.
-  - **Interactive Overlays:** Main menu with difficulty selector (`Easy`, `Medium`, `Hard`) and map theme dropdown (`Space`, `Dungeon`, `Military`), pause screen, game over recap, settings modal with drag-and-drop audio volume sliders, and help guides.
+  - **Interactive Overlays:** Gamertag entry, solo/multiplayer mode selection, room create/browse/waiting screens, difficulty and map selection, pause/game-over screens, high-score entry, per-map leaderboards, combat statistics, settings, and help.
+- Cooperative affordances include ownership accents, remote cursor display, shift-click tile pings, ready states, launch countdown, and separate wallet/stat readouts.
 - Handles coordinate transformations from viewport client coordinates to logical canvas space.
 
 ---
 
-### 3.8. Audio Engine & Dynamic Synthwave Synthesizer (`AudioManager`)
+### 3.9. Audio Engine & Dynamic Synthwave Synthesizer (`AudioManager`)
 
-Located in [src/audio/AudioManager.ts](src/audio/AudioManager.ts):
+Located in [src/audio/AudioManager.ts](../src/audio/AudioManager.ts):
 - **Web Audio Signal Chain:**
 
 ```mermaid
@@ -268,6 +303,8 @@ graph LR
 
 ## 4. Game Loop & Data Flow
 
+`GameLoop` supplies clamped wall-clock time. For the authoritative simulation, `Game` multiplies that value by the selected speed and repeatedly calls `updateSimulation` with at most $0.033\text{s}$ per call. This keeps high-speed movement and collision checks bounded. Pause stops simulation updates; changing speed does not change rendering cadence. In cooperative play, only P1 enters this simulation path.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -279,11 +316,15 @@ sequenceDiagram
     participant P as Projectiles
     participant ES as EconomySystem
     participant HS as HealthSystem
+    participant DC as DamageCalculator
+    participant MN as MultiplayerNetwork
     participant UI as UIManager
 
     GL->>G: update(dt)
-    G->>ES: update(dt) [passive income]
-    G->>WS: update(dt, activeEnemies)
+    G->>G: scaledDt = dt * gameSpeed
+    loop substeps <= 0.033 seconds
+    G->>ES: update(stepDt) [passive income]
+    G->>WS: update(stepDt, activeEnemies)
     alt Spawn Event
         WS-->>G: spawnEnemy(type)
         G->>E: instantiate & push Enemy
@@ -308,17 +349,40 @@ sequenceDiagram
     G->>P: update(dt) & checkCollision(enemies)
     opt Projectile Hit
         P->>E: takeDamage(damage)
+        G->>DC: recordDamage(ownerRole, actualDamage, towerType)
         opt Enemy Killed
             E-->>G: dead
-            G->>ES: addGold(reward)
+          G->>DC: recordKill(ownerRole)
+          G->>ES: add or split reward
             G->>G: add score & spawn death effect
         end
     end
 
     G->>G: clean up dead entities (filter alive)
+    end
+    opt Cooperative host
+      G->>MN: broadcast HOST_SNAPSHOT
+      MN-->>G: guest reconciles entities and state
+    end
     GL->>G: render()
     G->>G: render map, entities, effects
     G->>UI: render(ctx) [HUD, shop, inspect]
+```
+
+### Cooperative Command and State Flow
+
+```mermaid
+sequenceDiagram
+  participant P2 as Guest Game/UI
+  participant BC as BroadcastChannel
+  participant P1 as Host Game
+
+  P2->>BC: PLACE/UPGRADE/SELL/PING command
+  BC->>P1: typed NetworkMessage
+  P1->>P1: validate/apply command and simulate
+  P1->>BC: HOST_SNAPSHOT each rendered update
+  BC->>P2: authoritative state
+  P2->>P2: reconcile entities, wallets, score, and stats
 ```
 
 ---
@@ -353,7 +417,9 @@ ai-towerdefence/
 │   │   ├── persisted-map-high-scores.md
 │   │   ├── selectable-map-types.md
 │   │   ├── tower-upgrade-visuals.md
-│   │   └── variable-game-speed-controls.md
+│   │   ├── variable-game-speed-controls.md
+│   │   ├── cooperative-multiplayer.md
+│   │   └── multiplayer-damage-calculator.md
 │   └── tasks/                              # Task breakdown and implementation tracking
 ├── src/
 │   ├── main.ts                             # Main Game orchestrator and state coordinator
@@ -370,8 +436,12 @@ ai-towerdefence/
 │   │   └── Tower.ts                        # Tower targeting, cooldowns, and upgrade scaling
 │   ├── map/
 │   │   └── TileMap.ts                      # 40x30 tile layouts, auto-tiling, and waypoint generation
+│   ├── network/
+│   │   └── MultiplayerNetwork.ts           # BroadcastChannel rooms, commands, and state messages
 │   ├── system/
+│   │   ├── DamageCalculator.ts             # Per-player damage, kill, and contribution statistics
 │   │   ├── EconomySystem.ts                # Gold wallet and periodic interest income
+│   │   ├── HighScoreSystem.ts              # Per-map local leaderboard persistence
 │   │   ├── HealthSystem.ts                 # Player life pool and game-over detection
 │   │   ├── UpgradeSystem.ts                # Tower upgrade paths, archetype perks, and refunds
 │   │   └── WaveSystem.ts                   # Wave generator, enemy queueing, and schedule timers
@@ -384,9 +454,13 @@ ai-towerdefence/
 │   │   └── game-page.ts                    # Playwright Page Object Model helper
 │   └── ui/                                 # End-to-end UI and gameplay test suites
 │       ├── canvas-rendering.spec.ts
+│       ├── damage-calculator.spec.ts
+│       ├── game-speed.spec.ts
 │       ├── gameplay-controls.spec.ts
+│       ├── leaderboards.spec.ts
 │       ├── map-selection.spec.ts
 │       ├── menu-and-navigation.spec.ts
+│       ├── multiplayer.spec.ts
 │       ├── tower-placement-economy.spec.ts
 │       ├── tower-upgrade-sell.spec.ts
 │       └── tower-upgrade-visuals.spec.ts
@@ -401,7 +475,9 @@ ai-towerdefence/
 
 ## 7. Quality Assurance & Automated Testing Architecture
 
-The codebase incorporates end-to-end automated UI and gameplay validation via Playwright:
-- **Test Page Object Model ([tests/helpers/game-page.ts](tests/helpers/game-page.ts)):** Encapsulates canvas interactions, coordinates, menu clicks, tower placement, and window state introspection.
-- **Direct State Introspection:** Test specs interact with the game instance via exposed window variables (`window.game`, `window.gameData`, `window.uiManager`, `window.SpaceSprites`) to assert state changes without brittle canvas pixel-matching where logic verification is desired.
-- **Canvas Pixel Validation:** Tests evaluate offscreen cache populations, sprite generation keys, and coordinate click triggers across different viewports and browsers.
+The codebase incorporates end-to-end UI and gameplay validation via Playwright:
+- **Test Page Object Model ([tests/helpers/game-page.ts](../tests/helpers/game-page.ts)):** Encapsulates canvas interactions, coordinates, menu clicks, tower placement, and window-state introspection.
+- **Direct State Introspection:** Specs use the exposed `game`, `gameData`, `uiManager`, `highScoreSystem`, `damageCalculator`, `network`, and `SpaceSprites` hooks when logic assertions are more robust than pixel matching.
+- **Feature Coverage:** Dedicated suites cover maps, speed controls, leaderboards, cooperative room/gameplay flows, damage attribution, economy, upgrades, navigation, and canvas rendering.
+- **Canvas Pixel Validation:** Visual tests evaluate nonblank rendering and sprite differences for map/tower states where pixels are the behavior under test.
+- **Build Gate:** `npm run build` runs strict TypeScript compilation before producing the Vite bundle.
