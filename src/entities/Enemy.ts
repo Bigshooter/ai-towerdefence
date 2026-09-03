@@ -26,6 +26,7 @@ export class Enemy extends BaseEntity {
   private currentWaypoint: Position | null = null;
   private animFrame: number = 0;
   private animTimer: number = 0;
+  private hpMultiplier: number;
 
   constructor(type: EnemyType, waypointIndex: number, waypoints: Position[], hpMultiplier: number) {
     const stats = ENEMY_STATS[type];
@@ -35,6 +36,7 @@ export class Enemy extends BaseEntity {
 
     super(`enemy_${type}_${Math.random().toString(36).substr(2, 9)}`, startX, startY, size, size);
 
+    this.hpMultiplier = hpMultiplier;
     this.data = {
       ...stats,
       type,
@@ -84,6 +86,7 @@ export class Enemy extends BaseEntity {
         this.data.waypointIndex++;
         if (this.data.waypointIndex >= this.waypoints.length) {
           // Enemy reached the end!
+          this.data.reachedEnd = true;
           this.kill();
           return;
         }
@@ -106,10 +109,7 @@ export class Enemy extends BaseEntity {
   }
 
   getHpMultiplier(): number {
-    // HP scales with wave number and selected difficulty.
-    const wave = (globalThis as any).gameState?.wave ?? 1;
-    const difficultyHpMultiplier = (globalThis as any).gameState?.difficultyHpMultiplier ?? 1;
-    return (1 + (wave - 1) * 0.15) * difficultyHpMultiplier;
+    return this.hpMultiplier;
   }
 
   takeDamage(amount: number): number {

@@ -103,6 +103,7 @@ export class UIManager {
     this.canvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       this.selectedTowerType = null;
+      this.selectedTowerId = null;
       this.hoveredTile = null;
     });
 
@@ -233,6 +234,22 @@ export class UIManager {
     return this.selectedTowerId;
   }
 
+  getShowSettings(): boolean {
+    return this.showSettings;
+  }
+
+  getShowHelp(): boolean {
+    return this.showHelp;
+  }
+
+  getShowDifficultyDropdown(): boolean {
+    return this.showDifficultyDropdown;
+  }
+
+  getSelectedDifficulty(): DifficultyMode {
+    return this.selectedDifficulty;
+  }
+
   setGameState(state: GameState): void {
     this.gameState = state;
   }
@@ -289,8 +306,8 @@ export class UIManager {
   }
 
   private getHelpLayout() {
-    const w = 820;
-    const h = 560;
+    const w = 860;
+    const h = 720;
     const x = (this.canvas.width - w) / 2;
     const y = (this.canvas.height - h) / 2;
     return {
@@ -949,15 +966,12 @@ export class UIManager {
       },
     ];
 
-    let y = L.y + 108;
+    let y = L.y + 104;
     const iconX = L.x + 24;
     const textX = L.x + 72;
     const contentWidth = L.w - 96;
     const frame = Math.floor(Date.now() / 250) % 2;
     for (const row of rows) {
-      ctx.fillStyle = 'rgba(30, 45, 70, 0.45)';
-      ctx.fillRect(L.x + 18, y - 18, L.w - 36, 116);
-
       SpaceSprites.drawTower(ctx, row.type, iconX, y - 6, 34, frame, false, Date.now() / 1000);
 
       ctx.fillStyle = '#9ED8FF';
@@ -966,18 +980,34 @@ export class UIManager {
 
       ctx.fillStyle = '#E6F2FF';
       ctx.font = '12px monospace';
-      const baseNextY = this.drawWrappedText(ctx, `Base: ${row.base}`, textX, y + 20, contentWidth, 15);
-      const upgradesNextY = this.drawWrappedText(ctx, `Upgrades: ${row.upgrades}`, textX, baseNextY + 2, contentWidth, 15);
+      const baseNextY = this.drawWrappedText(ctx, `Base: ${row.base}`, textX, y + 18, contentWidth, 14);
+      const upgradesNextY = this.drawWrappedText(ctx, `Upgrades: ${row.upgrades}`, textX, baseNextY + 2, contentWidth, 14);
+
+      const cardH = (upgradesNextY - y) + 22;
+      ctx.fillStyle = 'rgba(30, 45, 70, 0.45)';
+      ctx.fillRect(L.x + 18, y - 14, L.w - 36, cardH);
+
+      // Re-draw text and icon over card background
+      SpaceSprites.drawTower(ctx, row.type, iconX, y - 6, 34, frame, false, Date.now() / 1000);
+
+      ctx.fillStyle = '#9ED8FF';
+      ctx.font = 'bold 15px monospace';
+      ctx.fillText(row.name, textX, y);
+
+      ctx.fillStyle = '#E6F2FF';
+      ctx.font = '12px monospace';
+      this.drawWrappedText(ctx, `Base: ${row.base}`, textX, y + 18, contentWidth, 14);
+      this.drawWrappedText(ctx, `Upgrades: ${row.upgrades}`, textX, baseNextY + 2, contentWidth, 14);
 
       ctx.strokeStyle = 'rgba(126, 200, 255, 0.25)';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      const dividerY = upgradesNextY + 4;
+      const dividerY = y - 14 + cardH + 4;
       ctx.moveTo(L.x + 20, dividerY);
       ctx.lineTo(L.x + L.w - 20, dividerY);
       ctx.stroke();
 
-      y = dividerY + 14;
+      y = dividerY + 10;
     }
 
     ctx.fillStyle = '#AFC7E8';

@@ -13,6 +13,10 @@ export class EconomySystem {
     return this.gold;
   }
 
+  setGold(amount: number): void {
+    this.gold = amount;
+  }
+
   addGold(amount: number): void {
     this.gold += amount;
   }
@@ -25,12 +29,14 @@ export class EconomySystem {
     return false;
   }
 
-  update(dt: number): void {
+  update(dt: number): number {
     this.periodicIncomeTimer += dt;
     if (this.periodicIncomeTimer >= this.periodicIncomeInterval) {
       this.periodicIncomeTimer = 0;
       this.gold += this.periodicIncomeAmount;
+      return this.periodicIncomeAmount;
     }
+    return 0;
   }
 
   reset(): void {

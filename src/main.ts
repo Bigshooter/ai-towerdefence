@@ -11,7 +11,7 @@ import { UpgradeOption, UpgradeSystem } from './system/UpgradeSystem';
 import { HealthSystem } from './system/HealthSystem';
 import { UIManager } from './ui/UIManager';
 import { AudioManager } from './audio/AudioManager';
-import { DifficultyMode, GameState, EnemyType, TowerType } from './types';
+import { DifficultyMode, GameState, EnemyType, TowerType, Position } from './types';
 
 interface GameData {
   lives: number;
@@ -42,6 +42,7 @@ class Game {
   private effects: Effect[] = [];
 
   // Wave tracking
+  private waypoints: Position[] = [];
   private waveCompleteTimer: number = 0;
   private wavePauseDuration: number = 3;
   private enemiesRemaining: number = 0;
@@ -68,6 +69,9 @@ class Game {
     // Initialize audio
     this.audioManager.init();
 
+    // Cache waypoints for map
+    this.waypoints = this.tileMap.getWaypoints();
+
     // Initialize UI manager
     this.uiManager = new UIManager(this.canvas);
     this.setupUICallbacks();
@@ -87,6 +91,9 @@ class Game {
       difficultyHpMultiplier: this.difficultyHpMultiplier,
     };
     (window as any).gameData = this.gameData;
+    (window as any).game = this;
+    (window as any).uiManager = this.uiManager;
+    (window as any).audioManager = this.audioManager;
   }
 
   private setupUICallbacks(): void {
@@ -282,11 +289,10 @@ class Game {
   }
 
   private spawnEnemy(type: EnemyType): void {
-    const waypoints = this.tileMap.getWaypoints();
-    if (waypoints.length === 0) return;
+    if (this.waypoints.length === 0) return;
 
     const waveHpMultiplier = 1 + (this.gameData.wave - 1) * 0.15;
-    const enemy = new Enemy(type, 0, waypoints, waveHpMultiplier * this.difficultyHpMultiplier);
+    const enemy = new Enemy(type, 0, this.waypoints, waveHpMultiplier * this.difficultyHpMultiplier);
     this.enemies.push(enemy);
     this.entityManager.add(enemy);
   }
@@ -337,6 +343,7 @@ class Game {
     
     // Deduct gold
     this.gameData.gold -= stats.cost;
+    this.economySystem.setGold(this.gameData.gold);
     this.audioManager.playSFX('click');
 
     return true;
@@ -367,28 +374,16 @@ class Game {
     const options = this.upgradeSystem.getUpgradeOptions(tower);
     if (options.length === 0) return;
 
-    // Use first available option for simplicity
+    // Use current upgrade option for the tower
     const option = options[0];
 
     if (this.gameData.gold >= option.cost) {
       this.gameData.gold -= option.cost;
+      this.economySystem.setGold(this.gameData.gold);
       option.apply(tower);
       tower.data.level++;
-      tower.data.range = this.getRangeForLevel(tower.data.type, tower.data.level);
       this.audioManager.playSFX('click');
     }
-  }
-
-  private getRangeForLevel(type: TowerType, level: number): number {
-    const baseRanges: Record<TowerType, number> = {
-      archer: 120,
-      cannon: 100,
-      sniper: 200,
-      ice: 90,
-      flamethrower: 100,
-    };
-    const clampedLevel = Math.max(1, level);
-    return baseRanges[type] * Math.pow(1.1, clampedLevel - 1);
   }
 
   private sellSelectedTower(): void {
@@ -407,6 +402,7 @@ class Game {
     
     // Add gold
     this.gameData.gold += sellValue;
+    this.economySystem.setGold(this.gameData.gold);
     this.uiManager['selectedTowerId'] = null;
     this.audioManager.playSFX('click');
   }
@@ -414,8 +410,11 @@ class Game {
   private update(dt: number): void {
     if (this.gameState !== 'playing') return;
 
-    // Update economy
-    this.economySystem.update(dt);
+    // Update economy with periodic passive income
+    const income = this.economySystem.update(dt);
+    if (income > 0) {
+      this.gameData.gold += income;
+    }
 
     // Advance the between-wave countdown, then start the next wave
     if (this.interWaveTimer > 0) {
@@ -443,12 +442,10 @@ class Game {
     for (const enemy of this.enemies) {
       enemy.update(dt);
       
-      // Check if enemy reached end of path (past last waypoint)
-      const waypoints = this.tileMap.getWaypoints();
-      if (!enemy.data.reachedEnd && enemy.data.waypointIndex >= waypoints.length - 1) {
-        enemy.data.reachedEnd = true;
+      // Check if enemy reached the true end of path
+      if (enemy.data.reachedEnd) {
         this.healthSystem.loseLife();
-        this.gameData.lives--;
+        this.gameData.lives = this.healthSystem.getLives();
         
         if (this.healthSystem.isGameOver()) {
           this.gameOver();
@@ -460,15 +457,13 @@ class Game {
     // Update towers and fire projectiles
     for (const tower of this.towers) {
       tower.update(dt);
+      const targetId = tower.findTarget(this.enemies);
       
-      if (tower.data.fireCooldown <= 0) {
-        const targetId = tower.findTarget(this.enemies);
-        if (targetId) {
-          const target = this.enemies.find(e => e.id === targetId);
-          if (target && target.alive) {
-            this.fireProjectile(tower, target);
-            tower.data.fireCooldown = 1 / tower.data.fireRate;
-          }
+      if (tower.data.fireCooldown <= 0 && targetId) {
+        const target = this.enemies.find(e => e.id === targetId);
+        if (target && target.alive) {
+          this.fireProjectile(tower, target);
+          tower.data.fireCooldown = 1 / tower.data.fireRate;
         }
       }
     }
@@ -580,6 +575,7 @@ class Game {
     // Bonus gold for completing wave
     const bonusGold = 20 + this.gameData.wave * 5;
     this.gameData.gold += bonusGold;
+    this.economySystem.setGold(this.gameData.gold);
 
     // Advance to the next wave after a pause (countdown driven by update(dt))
     this.gameData.wave++;

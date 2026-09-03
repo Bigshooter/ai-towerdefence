@@ -49,13 +49,13 @@ export class Tower extends BaseEntity {
     }
   }
 
-  findTarget(enemies: { id: string; position: Position; size?: { width: number; height: number } }[]): string | null {
+  findTarget(enemies: { id: string; position: Position; size?: { width: number; height: number }; alive?: boolean }[]): string | null {
     const center = { x: this.centerX, y: this.centerY };
     let closestDist = Infinity;
     let targetId: string | null = null;
 
     for (const enemy of enemies) {
-      if (!enemy.id || !this.alive) continue;
+      if (!enemy.id || !this.alive || enemy.alive === false) continue;
 
       const enemyCenterX = enemy.position.x + ((enemy.size?.width ?? 0) / 2);
       const enemyCenterY = enemy.position.y + ((enemy.size?.height ?? 0) / 2);
@@ -70,6 +70,7 @@ export class Tower extends BaseEntity {
       }
     }
 
+    this.data.targetId = targetId;
     return targetId;
   }
 
