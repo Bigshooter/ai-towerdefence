@@ -50,6 +50,14 @@ After building, run:
 npm run preview
 ```
 
+## Deploy To GitHub Pages
+
+The GitHub Actions workflow in `.github/workflows/deploy-pages.yml` builds and deploys the game whenever changes are pushed to `main`.
+
+For the first deployment, open the repository's **Settings > Pages** and set **Source** to **GitHub Actions**. After the workflow completes, the game is available at:
+
+https://bigshooter.github.io/ai-towerdefence/
+
 ## Automated UI Testing
 
 The project uses [Playwright](https://playwright.dev/) for automated end-to-end UI testing across menus, canvas interactions, audio controls, difficulty settings, and gameplay loops.

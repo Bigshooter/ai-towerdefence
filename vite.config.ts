@@ -1,7 +1,8 @@
 import { defineConfig } from 'vite';
 import path from 'path';
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  base: command === 'build' ? '/ai-towerdefence/' : '/',
   root: '.',
   build: {
     outDir: 'dist',
@@ -11,4 +12,4 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
-});
+}));
