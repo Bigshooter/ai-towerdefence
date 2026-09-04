@@ -3268,7 +3268,7 @@ export class UIManager {
       ctx.fillText('No open games waiting for a partner.', L.x + L.w / 2, L.y + 240);
       ctx.font = '13px monospace';
       ctx.fillStyle = '#AFC7E8';
-      ctx.fillText("Enter the host's room code above to join online.", L.x + L.w / 2, L.y + 270);
+      ctx.fillText('Click Refresh to scan for waiting hosts or enter a room code.', L.x + L.w / 2, L.y + 270);
     } else {
       for (let i = 0; i < this.openRooms.length; i++) {
         const room = this.openRooms[i];

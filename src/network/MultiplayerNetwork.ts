@@ -6,16 +6,37 @@ interface NetworkEnvelope {
   message: NetworkMessage;
 }
 
+type LobbyMessage =
+  | { type: 'REGISTER_ROOM'; room: MultiplayerRoom }
+  | { type: 'UNREGISTER_ROOM'; roomId: string }
+  | { type: 'QUERY_ROOMS' }
+  | { type: 'ROOM_LIST'; rooms: MultiplayerRoom[] };
+
+interface LobbyRoomRecord {
+  room: MultiplayerRoom;
+  lastSeen: number;
+}
+
 export class MultiplayerNetwork {
   private channel: BroadcastChannel | null = null;
   private peer: Peer | null = null;
   private peerConnections: Set<DataConnection> = new Set();
+  private lobbyPeer: Peer | null = null;
+  private lobbyConnection: DataConnection | null = null;
+  private lobbyClients: Set<DataConnection> = new Set();
+  private lobbyRooms: Map<string, LobbyRoomRecord> = new Map();
+  private isLobbyCoordinator = false;
+  private lobbyRetryTimer: number | null = null;
+  private lobbyHeartbeatInterval: number | null = null;
+  private lastLobbyResponse = 0;
   private listeners: Array<(msg: NetworkMessage) => void> = [];
   private currentRoom: MultiplayerRoom | null = null;
   private currentRole: PlayerRole | null = null;
   private announceInterval: number | null = null;
   private channelName: string = 'td_multiplayer_channel';
   private readonly clientId = crypto.randomUUID();
+  private readonly peerNamespace = location.host.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  private readonly lobbyPeerId = `ai-towerdefence-public-lobby-v1-${this.peerNamespace}`;
   private messageSequence = 0;
   private seenMessages: Set<string> = new Set();
 
@@ -128,7 +149,7 @@ export class MultiplayerNetwork {
   }
 
   private peerIdForRoom(roomId: string): string {
-    return `ai-towerdefence-${roomId.toLowerCase()}`;
+    return `ai-towerdefence-${this.peerNamespace}-${roomId.toLowerCase()}`;
   }
 
   private disconnectPeer(): void {
@@ -138,6 +159,186 @@ export class MultiplayerNetwork {
     this.peerConnections.clear();
     this.peer?.destroy();
     this.peer = null;
+  }
+
+  private initializeLobby(): void {
+    this.disconnectLobby();
+    const candidate = new Peer(this.lobbyPeerId);
+    this.lobbyPeer = candidate;
+
+    candidate.on('open', () => {
+      this.isLobbyCoordinator = true;
+      candidate.on('connection', (connection) => this.registerLobbyClient(connection));
+      this.registerCurrentRoomWithLobby();
+    });
+    candidate.on('error', (error) => {
+      if (error.type === 'unavailable-id') {
+        candidate.destroy();
+        if (this.lobbyPeer === candidate) {
+          this.connectToLobbyCoordinator();
+        }
+        return;
+      }
+      if (this.lobbyPeer === candidate) {
+        console.error('Multiplayer lobby connection failed:', error);
+        this.scheduleLobbyReconnect();
+      }
+    });
+  }
+
+  private ensureLobbyInitialized(): void {
+    if (!this.lobbyPeer && this.lobbyRetryTimer === null) {
+      this.initializeLobby();
+    }
+  }
+
+  private connectToLobbyCoordinator(): void {
+    const peer = new Peer();
+    this.lobbyPeer = peer;
+    this.isLobbyCoordinator = false;
+
+    peer.on('open', () => {
+      const connection = peer.connect(this.lobbyPeerId, {
+        reliable: true,
+        serialization: 'json',
+      });
+      this.lobbyConnection = connection;
+      connection.on('data', (data) => this.handleLobbyMessage(data as LobbyMessage));
+      connection.on('open', () => {
+        this.lastLobbyResponse = Date.now();
+        this.startLobbyHeartbeat();
+        this.registerCurrentRoomWithLobby();
+        this.sendLobbyMessage({ type: 'QUERY_ROOMS' });
+      });
+      connection.on('close', () => {
+        if (this.lobbyConnection === connection) {
+          this.lobbyConnection = null;
+          this.scheduleLobbyReconnect();
+        }
+      });
+      connection.on('error', () => {
+        if (this.lobbyConnection === connection) {
+          this.scheduleLobbyReconnect();
+        }
+      });
+    });
+    peer.on('error', (error) => {
+      if (this.lobbyPeer === peer) {
+        if (error.type !== 'peer-unavailable') {
+          console.error('Multiplayer lobby client failed:', error);
+        }
+        this.scheduleLobbyReconnect();
+      }
+    });
+  }
+
+  private registerLobbyClient(connection: DataConnection): void {
+    this.lobbyClients.add(connection);
+    connection.on('data', (data) => this.handleLobbyMessage(data as LobbyMessage, connection));
+    connection.on('close', () => this.lobbyClients.delete(connection));
+    connection.on('error', () => this.lobbyClients.delete(connection));
+  }
+
+  private handleLobbyMessage(message: LobbyMessage, source?: DataConnection): void {
+    if (message.type === 'REGISTER_ROOM' && this.isLobbyCoordinator) {
+      if (message.room.status === 'waiting') {
+        this.lobbyRooms.set(message.room.id, { room: { ...message.room }, lastSeen: Date.now() });
+      } else {
+        this.lobbyRooms.delete(message.room.id);
+      }
+      this.publishLobbyRoomList();
+    } else if (message.type === 'UNREGISTER_ROOM' && this.isLobbyCoordinator) {
+      this.lobbyRooms.delete(message.roomId);
+      this.publishLobbyRoomList();
+    } else if (message.type === 'QUERY_ROOMS' && this.isLobbyCoordinator) {
+      const rooms = this.getFreshLobbyRooms();
+      if (source?.open) {
+        source.send({ type: 'ROOM_LIST', rooms } satisfies LobbyMessage);
+      } else {
+        this.applyLobbyRoomList(rooms);
+      }
+    } else if (message.type === 'ROOM_LIST') {
+      this.lastLobbyResponse = Date.now();
+      this.applyLobbyRoomList(message.rooms);
+    }
+  }
+
+  private getFreshLobbyRooms(): MultiplayerRoom[] {
+    const cutoff = Date.now() - 5000;
+    for (const [roomId, record] of this.lobbyRooms) {
+      if (record.lastSeen < cutoff || record.room.status !== 'waiting') {
+        this.lobbyRooms.delete(roomId);
+      }
+    }
+    return Array.from(this.lobbyRooms.values(), ({ room }) => ({ ...room }));
+  }
+
+  private applyLobbyRoomList(rooms: MultiplayerRoom[]): void {
+    for (const room of rooms) {
+      this.handleIncomingMessage({ type: 'ANNOUNCE_ROOM', room });
+    }
+  }
+
+  private publishLobbyRoomList(): void {
+    const message: LobbyMessage = { type: 'ROOM_LIST', rooms: this.getFreshLobbyRooms() };
+    this.handleLobbyMessage(message);
+    for (const connection of this.lobbyClients) {
+      if (connection.open) {
+        connection.send(message);
+      }
+    }
+  }
+
+  private sendLobbyMessage(message: LobbyMessage): void {
+    if (this.isLobbyCoordinator) {
+      this.handleLobbyMessage(message);
+    } else if (this.lobbyConnection?.open) {
+      this.lobbyConnection.send(message);
+    }
+  }
+
+  private registerCurrentRoomWithLobby(): void {
+    if (this.currentRoom?.status === 'waiting' && this.currentRole === 'p1') {
+      this.sendLobbyMessage({ type: 'REGISTER_ROOM', room: { ...this.currentRoom } });
+    }
+  }
+
+  private scheduleLobbyReconnect(): void {
+    if (this.lobbyRetryTimer !== null) return;
+    this.lobbyRetryTimer = window.setTimeout(() => {
+      this.lobbyRetryTimer = null;
+      this.initializeLobby();
+    }, 1000 + Math.random() * 1000);
+  }
+
+  private startLobbyHeartbeat(): void {
+    if (this.lobbyHeartbeatInterval !== null) {
+      clearInterval(this.lobbyHeartbeatInterval);
+    }
+    this.lobbyHeartbeatInterval = window.setInterval(() => {
+      if (!this.lobbyConnection?.open || Date.now() - this.lastLobbyResponse > 5000) {
+        this.initializeLobby();
+        return;
+      }
+      this.sendLobbyMessage({ type: 'QUERY_ROOMS' });
+    }, 2000);
+  }
+
+  private disconnectLobby(): void {
+    if (this.lobbyHeartbeatInterval !== null) {
+      clearInterval(this.lobbyHeartbeatInterval);
+      this.lobbyHeartbeatInterval = null;
+    }
+    const lobbyConnection = this.lobbyConnection;
+    this.lobbyConnection = null;
+    lobbyConnection?.close();
+    for (const connection of this.lobbyClients) {
+      connection.close();
+    }
+    this.lobbyClients.clear();
+    this.lobbyPeer?.destroy();
+    this.lobbyPeer = null;
+    this.isLobbyCoordinator = false;
   }
 
   private handleIncomingMessage(msg: NetworkMessage): void {
@@ -158,6 +359,7 @@ export class MultiplayerNetwork {
         this.currentRoom.guestTag = msg.guestTag;
         this.currentRoom.status = 'ready';
         this.currentRoom.guestReady = false;
+        this.sendLobbyMessage({ type: 'UNREGISTER_ROOM', roomId: this.currentRoom.id });
         const acceptedMsg: NetworkMessage = {
           type: 'JOIN_ACCEPTED',
           room: { ...this.currentRoom },
@@ -210,6 +412,7 @@ export class MultiplayerNetwork {
 
   public createRoom(hostTag: string, mapType: MapType, difficulty: DifficultyMode): MultiplayerRoom {
     this.leaveCurrentRoom();
+    this.ensureLobbyInitialized();
 
     const randomSuffix = Array.from(crypto.getRandomValues(new Uint8Array(6)))
       .map((value) => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[value % 36])
@@ -228,6 +431,7 @@ export class MultiplayerNetwork {
     this.currentRoom = room;
     this.currentRole = 'p1';
     this.initializeHostPeer(room.id);
+    this.registerCurrentRoomWithLobby();
 
     // Broadcast room existence immediately
     this.broadcast({
@@ -241,6 +445,7 @@ export class MultiplayerNetwork {
     }
     this.announceInterval = window.setInterval(() => {
       if (this.currentRoom && this.currentRoom.status === 'waiting') {
+        this.registerCurrentRoomWithLobby();
         this.broadcast({
           type: 'ANNOUNCE_ROOM',
           room: { ...this.currentRoom },
@@ -263,9 +468,11 @@ export class MultiplayerNetwork {
   }
 
   public queryOpenRooms(): void {
+    this.ensureLobbyInitialized();
     this.broadcast({
       type: 'QUERY_ROOMS',
     });
+    this.sendLobbyMessage({ type: 'QUERY_ROOMS' });
   }
 
   public setRoom(room: MultiplayerRoom | null, role: PlayerRole | null): void {
@@ -305,6 +512,9 @@ export class MultiplayerNetwork {
     }
 
     if (this.currentRoom && this.currentRole) {
+      if (this.currentRole === 'p1') {
+        this.sendLobbyMessage({ type: 'UNREGISTER_ROOM', roomId: this.currentRoom.id });
+      }
       this.broadcast({
         type: 'LEAVE_ROOM',
         roomId: this.currentRoom.id,
@@ -323,6 +533,11 @@ export class MultiplayerNetwork {
       this.channel.close();
       this.channel = null;
     }
+    if (this.lobbyRetryTimer !== null) {
+      clearTimeout(this.lobbyRetryTimer);
+      this.lobbyRetryTimer = null;
+    }
+    this.disconnectLobby();
     this.listeners = [];
   }
 }

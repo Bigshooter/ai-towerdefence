@@ -395,6 +395,7 @@ class Game {
     };
 
     this.uiManager.onQueryRooms = () => {
+      this.uiManager.setOpenRooms([]);
       this.network.queryOpenRooms();
     };
 

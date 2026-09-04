@@ -242,9 +242,12 @@ test.describe('Task 28 & 29: Cooperative Split Economy & Real-Time Sync', () => 
     await guest.clickPlayCoopCard();
     await guest.clickJoinGameButton();
 
-    // Cross-device players join directly because BroadcastChannel room discovery is local-only.
-    await page2.keyboard.type(roomId);
-    await page2.keyboard.press('Enter');
+    // Guest discovers the host through the online lobby despite using a separate context.
+    await guest.clickRefreshRoomsButton();
+    await expect.poll(async () => {
+      return await page2.evaluate(() => (window as any).uiManager.getOpenRooms().length);
+    }, { timeout: 10000 }).toBeGreaterThan(0);
+    await guest.clickJoinFirstRoomButton();
 
     // Verify Guest transitions to Waiting Room with Host's room ID
     await expect.poll(async () => await guest.getActiveMenuScreen()).toBe('multiplayer_waiting_room');
