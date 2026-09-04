@@ -210,10 +210,11 @@ test.describe('Task 28 & 29: Cooperative Split Economy & Real-Time Sync', () => 
   });
 
   test('2 Browser Windows should connect on first click, show ready checkmarks on both, and launch game', async ({ browser }) => {
-    // Open two separate pages in the same browser context (sharing BroadcastChannel)
-    const context = await browser.newContext();
-    const page1 = await context.newPage();
-    const page2 = await context.newPage();
+    // Separate contexts do not share BroadcastChannel, matching players on different devices.
+    const hostContext = await browser.newContext();
+    const guestContext = await browser.newContext();
+    const page1 = await hostContext.newPage();
+    const page2 = await guestContext.newPage();
 
     const host = new TowerDefencePage(page1);
     const guest = new TowerDefencePage(page2);
@@ -241,13 +242,9 @@ test.describe('Task 28 & 29: Cooperative Split Economy & Real-Time Sync', () => 
     await guest.clickPlayCoopCard();
     await guest.clickJoinGameButton();
 
-    // Guest queries & sees Host room in list
-    await page2.waitForTimeout(500);
-    await guest.clickRefreshRoomsButton();
-    await page2.waitForTimeout(500);
-
-    // Guest clicks Join Room on first attempt
-    await guest.clickJoinFirstRoomButton();
+    // Cross-device players join directly because BroadcastChannel room discovery is local-only.
+    await page2.keyboard.type(roomId);
+    await page2.keyboard.press('Enter');
 
     // Verify Guest transitions to Waiting Room with Host's room ID
     await expect.poll(async () => await guest.getActiveMenuScreen()).toBe('multiplayer_waiting_room');
@@ -295,6 +292,7 @@ test.describe('Task 28 & 29: Cooperative Split Economy & Real-Time Sync', () => 
       expect(hostEnemies[i].hp).toBe(guestEnemies[i].hp);
     }
 
-    await context.close();
+    await hostContext.close();
+    await guestContext.close();
   });
 });

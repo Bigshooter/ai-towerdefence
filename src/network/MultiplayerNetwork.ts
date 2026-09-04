@@ -1,12 +1,23 @@
 import { DifficultyMode, MapType, MultiplayerRoom, NetworkMessage, PlayerRole } from '../types';
+import Peer, { DataConnection } from 'peerjs';
+
+interface NetworkEnvelope {
+  id: string;
+  message: NetworkMessage;
+}
 
 export class MultiplayerNetwork {
   private channel: BroadcastChannel | null = null;
+  private peer: Peer | null = null;
+  private peerConnections: Set<DataConnection> = new Set();
   private listeners: Array<(msg: NetworkMessage) => void> = [];
   private currentRoom: MultiplayerRoom | null = null;
   private currentRole: PlayerRole | null = null;
   private announceInterval: number | null = null;
   private channelName: string = 'td_multiplayer_channel';
+  private readonly clientId = crypto.randomUUID();
+  private messageSequence = 0;
+  private seenMessages: Set<string> = new Set();
 
   constructor() {
     this.initChannel();
@@ -16,8 +27,8 @@ export class MultiplayerNetwork {
     try {
       if (typeof BroadcastChannel !== 'undefined') {
         this.channel = new BroadcastChannel(this.channelName);
-        this.channel.onmessage = (event: MessageEvent<NetworkMessage>) => {
-          this.handleIncomingMessage(event.data);
+        this.channel.onmessage = (event: MessageEvent<NetworkEnvelope | NetworkMessage>) => {
+          this.handleIncomingData(event.data);
         };
       }
     } catch (err) {
@@ -33,9 +44,100 @@ export class MultiplayerNetwork {
   }
 
   public broadcast(msg: NetworkMessage): void {
-    if (this.channel) {
-      this.channel.postMessage(msg);
+    const envelope = this.createEnvelope(msg);
+    this.sendEnvelope(envelope);
+  }
+
+  private sendEnvelope(envelope: NetworkEnvelope): void {
+    this.channel?.postMessage(envelope);
+
+    for (const connection of this.peerConnections) {
+      if (connection.open) {
+        connection.send(envelope);
+      }
     }
+  }
+
+  private createEnvelope(message: NetworkMessage): NetworkEnvelope {
+    this.messageSequence++;
+    return {
+      id: `${this.clientId}:${this.messageSequence}`,
+      message,
+    };
+  }
+
+  private handleIncomingData(data: NetworkEnvelope | NetworkMessage): void {
+    if ('id' in data && 'message' in data) {
+      if (this.seenMessages.has(data.id)) return;
+
+      this.seenMessages.add(data.id);
+      if (this.seenMessages.size > 1000) {
+        const oldestId = this.seenMessages.values().next().value;
+        if (oldestId) this.seenMessages.delete(oldestId);
+      }
+      this.handleIncomingMessage(data.message);
+      return;
+    }
+
+    this.handleIncomingMessage(data);
+  }
+
+  private initializeHostPeer(roomId: string): void {
+    this.disconnectPeer();
+    this.peer = new Peer(this.peerIdForRoom(roomId));
+    this.peer.on('connection', (connection) => this.registerPeerConnection(connection));
+    this.peer.on('error', (error) => {
+      console.error('Multiplayer host connection failed:', error);
+    });
+  }
+
+  private initializeGuestPeer(roomId: string, joinEnvelope: NetworkEnvelope): void {
+    this.disconnectPeer();
+    this.peer = new Peer();
+    this.peer.on('open', () => {
+      if (!this.peer) return;
+
+      const connection = this.peer.connect(this.peerIdForRoom(roomId), {
+        reliable: true,
+        serialization: 'json',
+      });
+      this.registerPeerConnection(connection, joinEnvelope);
+    });
+    this.peer.on('error', (error) => {
+      console.error('Multiplayer guest connection failed:', error);
+    });
+  }
+
+  private registerPeerConnection(connection: DataConnection, envelopeOnOpen?: NetworkEnvelope): void {
+    this.peerConnections.add(connection);
+    connection.on('data', (data) => {
+      this.handleIncomingData(data as NetworkEnvelope | NetworkMessage);
+    });
+    connection.on('open', () => {
+      if (envelopeOnOpen) {
+        connection.send(envelopeOnOpen);
+      }
+    });
+    connection.on('close', () => {
+      this.peerConnections.delete(connection);
+    });
+    connection.on('error', (error) => {
+      console.error('Multiplayer data connection failed:', error);
+      this.peerConnections.delete(connection);
+    });
+  }
+
+  private peerIdForRoom(roomId: string): string {
+    return `ai-towerdefence-${roomId.toLowerCase()}`;
+  }
+
+  private disconnectPeer(): void {
+    for (const connection of this.peerConnections) {
+      connection.close();
+    }
+    this.peerConnections.clear();
+    this.peer?.destroy();
+    this.peer = null;
   }
 
   private handleIncomingMessage(msg: NetworkMessage): void {
@@ -109,7 +211,9 @@ export class MultiplayerNetwork {
   public createRoom(hostTag: string, mapType: MapType, difficulty: DifficultyMode): MultiplayerRoom {
     this.leaveCurrentRoom();
 
-    const randomSuffix = Math.floor(1000 + Math.random() * 9000);
+    const randomSuffix = Array.from(crypto.getRandomValues(new Uint8Array(6)))
+      .map((value) => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[value % 36])
+      .join('');
     const room: MultiplayerRoom = {
       id: `ROOM-${randomSuffix}`,
       hostTag,
@@ -123,6 +227,7 @@ export class MultiplayerNetwork {
 
     this.currentRoom = room;
     this.currentRole = 'p1';
+    this.initializeHostPeer(room.id);
 
     // Broadcast room existence immediately
     this.broadcast({
@@ -148,11 +253,13 @@ export class MultiplayerNetwork {
 
   public requestJoinRoom(roomId: string, guestTag: string): void {
     this.currentRole = 'p2';
-    this.broadcast({
+    const joinEnvelope = this.createEnvelope({
       type: 'JOIN_ROOM',
       roomId,
       guestTag,
     });
+    this.sendEnvelope(joinEnvelope);
+    this.initializeGuestPeer(roomId, joinEnvelope);
   }
 
   public queryOpenRooms(): void {
@@ -207,6 +314,7 @@ export class MultiplayerNetwork {
 
     this.currentRoom = null;
     this.currentRole = null;
+    this.disconnectPeer();
   }
 
   public destroy(): void {
