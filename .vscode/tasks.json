@@ -4,7 +4,10 @@
 		{
 			"label": "dev",
 			"type": "shell",
-			"command": "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; npx vite --host 0.0.0.0",
+			"command": "npx vite --host 0.0.0.0",
+			"windows": {
+				"command": "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass; npx vite --host 0.0.0.0"
+			},
 			"isBackground": true,
 			"problemMatcher": []
 		}

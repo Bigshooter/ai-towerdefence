@@ -22,6 +22,18 @@ From the project root:
 npm install
 ```
 
+## Dev Container
+
+This repo includes a [Dev Container](https://containers.dev/) config (`.devcontainer/devcontainer.json`) for a ready-to-use development environment in VS Code or GitHub Codespaces.
+
+- Base image: `mcr.microsoft.com/devcontainers/typescript-node:1-20-bookworm`, with the GitHub CLI feature installed.
+- On creation it runs `npm ci`, installs Playwright's Chromium browser (with OS deps), and installs the `@github/copilot` CLI globally.
+- Forwards port `5173` (Vite dev server) and `9323` (Playwright HTML report).
+- Mounts your local `~/.config/gh` folder and forwards `GH_TOKEN` so `gh` auth carries over from the host.
+- Preinstalls the ESLint, Prettier, Playwright, and GitHub Copilot VS Code extensions.
+
+To use it, open the project in VS Code with the **Dev Containers** extension installed and select **Reopen in Container** (or open it directly in a GitHub Codespace).
+
 ## Run In Development
 
 Start the Vite dev server:
